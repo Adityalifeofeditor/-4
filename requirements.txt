@@ -3,3 +3,9 @@ tgcrypto==1.2.5
 requests==2.31.0
 python-dotenv==1.0.1
 httpx
+
+Flask
+gunicorn
+Jinja2
+werkzeug
+itsdangerous
