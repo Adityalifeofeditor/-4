@@ -15,7 +15,7 @@ import logging
 logger = logging.getLogger("render_api")
 logger.setLevel(logging.INFO)
 
-BASE = "https://api.render.com/v1"
+BASE = "https://api.render.com/v1/services?limit=3"
 
 VALID_SERVICE_TYPES = {
     "static_site",
