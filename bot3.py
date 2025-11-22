@@ -15,8 +15,8 @@ import traceback
 from typing import Dict, Optional
 
 import aiohttp
-from Pyrogram import Client, filters  # Pyrofork usage (Pyrogram fork)
-from pyrofork.types import Message  # type hints (if available)
+from pyrogram import Client, filters  # Pyrofork usage (Pyrogram fork)
+from pyrogram.types import Message  # type hints (if available)
 from dotenv import load_dotenv
 
 load_dotenv()
