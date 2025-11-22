@@ -1,200 +1,354 @@
+#!/usr/bin/env python3
+"""
+Render-management Telegram bot using Pyrofork.
+
+Requires:
+    pip install pyrofork aiohttp python-dotenv
+Set env:
+    BOT_TOKEN, API_ID, API_HASH
+"""
+
 import os
 import json
 import asyncio
-from typing import Optional
+import traceback
+from typing import Dict, Optional
 
-from pyrogram import Client, filters
-from pyrogram.types import Message
-import httpx
+import aiohttp
+from Pyrogram import Client, filters  # Pyrofork usage (Pyrogram fork)
+from pyrofork.types import Message  # type hints (if available)
+from dotenv import load_dotenv
 
-# --- Configuration ---
-API_ID = int(os.getenv("API_ID", "123456"))    # your Telegram API ID (learn more from my.telegram.org)
-API_HASH = os.getenv("API_HASH", "your_api_hash")
-BOT_TOKEN = os.getenv("BOT_TOKEN", "your_bot_token_here")
+load_dotenv()
 
-DATA_FILE = "render_keys.json"   # simple storage; use a secure vault in production
-ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "0"))  # optional: restrict commands to this chat/user (0 = disabled)
+BOT_TOKEN = os.getenv("BOT_TOKEN")  # required
+API_ID = os.getenv("API_ID")
+API_HASH = os.getenv("API_HASH")
 
-RENDER_BASE = "https://api.render.com/v1"
+if not BOT_TOKEN or not API_ID or not API_HASH:
+    raise SystemExit("Please set BOT_TOKEN, API_ID and API_HASH environment variables.")
 
-# --- Helpers for storing API keys (very simple) ---
-def load_store() -> dict:
-    if not os.path.exists(DATA_FILE):
-        return {}
-    with open(DATA_FILE, "r") as f:
-        return json.load(f)
+# file to persist per-user render API keys (very simple)
+SESSIONS_FILE = "render_sessions.json"
+RENDER_API_BASE = "https://api.render.com/v1"
 
-def save_store(data: dict):
-    with open(DATA_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+# in-memory cache loaded from file
+sessions: Dict[str, Dict] = {}
 
-def set_api_key_for_chat(chat_id: int, api_key: str):
-    data = load_store()
-    data[str(chat_id)] = api_key
-    save_store(data)
+def load_sessions():
+    global sessions
+    try:
+        if os.path.exists(SESSIONS_FILE):
+            with open(SESSIONS_FILE, "r") as f:
+                sessions = json.load(f)
+        else:
+            sessions = {}
+    except Exception:
+        print("Failed loading sessions file:")
+        traceback.print_exc()
+        sessions = {}
 
-def get_api_key_for_chat(chat_id: int) -> Optional[str]:
-    return load_store().get(str(chat_id))
+def save_sessions():
+    try:
+        with open(SESSIONS_FILE, "w") as f:
+            json.dump(sessions, f, indent=2)
+    except Exception:
+        print("Failed saving sessions file:")
+        traceback.print_exc()
 
-# --- HTTP helper using httpx (async) ---
+def mask_key(key: str) -> str:
+    if not key:
+        return "<none>"
+    if len(key) <= 8:
+        return key[:2] + "..." + key[-2:]
+    return key[:4] + "..." + key[-4:]
+
+# small helper for Render API requests using aiohttp
 async def render_request(method: str, path: str, api_key: str, **kwargs):
+    """
+    Make an authenticated request to Render API. Raises on non-2xx.
+    Returns JSON-decoded response body or None if empty.
+    """
+    url = f"{RENDER_API_BASE}{path}"
     headers = kwargs.pop("headers", {})
-    headers["Authorization"] = f"Bearer {api_key}"
-    headers["Accept"] = "application/json"
-    url = f"{RENDER_BASE}{path}"
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        r = await client.request(method, url, headers=headers, **kwargs)
-        # Basic error handling
-        if r.status_code == 429:
-            raise RuntimeError("Rate limited by Render API (429).")
-        if r.status_code >= 400:
-            raise RuntimeError(f"Render API error {r.status_code}: {r.text}")
-        return r.json()
+    headers.update({
+        "Authorization": f"Bearer {api_key}",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    })
 
-# --- Pyrogram bot ---
-app = Client("render-bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.request(method, url, headers=headers, **kwargs) as resp:
+                text = await resp.text()
+                try:
+                    data = await resp.json(content_type=None)
+                except Exception:
+                    data = text
+                if 200 <= resp.status < 300:
+                    return data
+                else:
+                    raise RuntimeError(f"Render API error {resp.status}: {text}")
+    except Exception:
+        # bubble up with full traceback for logging at caller
+        raise
 
-def admin_only(func):
-    async def wrapper(client, message: Message):
-        if ADMIN_CHAT_ID != 0 and message.chat.id != ADMIN_CHAT_ID:
-            await message.reply_text("Unauthorized.")
-            return
-        await func(client, message)
-    return wrapper
+# ---------------------------------------------------------
+# Pyrofork bot setup
+app = Client(
+    name="render_mgmt_bot",
+    bot_token=BOT_TOKEN,
+    api_id=int(API_ID),
+    api_hash=API_HASH,
+)
+
+# load persisted sessions at startup
+load_sessions()
+
+# helper to get user's stored API key
+def get_user_key(user_id: int) -> Optional[str]:
+    return sessions.get(str(user_id), {}).get("api_key")
+
+def set_user_key(user_id: int, api_key: str):
+    sessions[str(user_id)] = {"api_key": api_key}
+    save_sessions()
+
+def del_user_key(user_id: int):
+    sessions.pop(str(user_id), None)
+    save_sessions()
+
+# ----------------- Command Handlers ---------------------
 
 @app.on_message(filters.command("start") & filters.private)
-async def start_cmd(client, message: Message):
+async def start_handler(client: Client, message: Message):
     await message.reply_text(
-        "Hi — I can help manage your Render account.\n"
+        "Hi — I'm a Render-management bot.\n"
         "Commands:\n"
-        "/setkey <API_KEY> - store your Render API key for this chat\n"
-        "/getkey - show whether a key is stored (not the key itself)\n"
-        "/list_services - list first page of services\n"
-        "/restart <service_id> - restart a service\n"
-        "/scale <service_id> <count> - set manual instance count\n        /env_set <service_id> KEY=VALUE[,KEY2=VALUE2] - replace env vars\n    "
+        "/login <api_key>\n"
+        "/view\n"
+        "/logout\n"
+        "/acc_info\n"
+        "/app\n"
+        "/del <app_name>\n"
+        "/restart <app_name>\n"
+        "/env_vars <app_name>\n"
+        "/env_set <app_name> KEY VALUE\n"
+        "/env_del <app_name> KEY\n"
     )
 
-@app.on_message(filters.command("setkey") & filters.private)
-@admin_only
-async def setkey(client, message: Message):
-    if len(message.command) < 2:
-        await message.reply_text("Usage: /setkey <RENDER_API_KEY>")
-        return
-    api_key = message.command[1].strip()
-    set_api_key_for_chat(message.chat.id, api_key)
-    await message.reply_text("Render API key saved for this chat. (Keep it secret!)")
-
-@app.on_message(filters.command("getkey") & filters.private)
-@admin_only
-async def getkey(client, message: Message):
-    key = get_api_key_for_chat(message.chat.id)
-    if key:
-        await message.reply_text("A Render API key is stored for this chat.")
-    else:
-        await message.reply_text("No Render API key stored. Use /setkey to add one.")
-
-@app.on_message(filters.command("list_services") & filters.private)
-@admin_only
-async def list_services(client, message: Message):
-    api_key = get_api_key_for_chat(message.chat.id)
-    if not api_key:
-        await message.reply_text("No Render API key stored. Use /setkey <KEY>.")
-        return
+@app.on_message(filters.command("login") & filters.private)
+async def login_handler(client: Client, message: Message):
     try:
-        data = await render_request("GET", "/services", api_key, params={"limit": 20})
-    except Exception as e:
-        await message.reply_text(f"Error: {e}")
-        return
+        args = message.text.split(maxsplit=1)
+        if len(args) < 2:
+            return await message.reply_text("Usage: /login <api_key>")
 
-    services = data.get("data") or data  # some endpoints return data wrapper
-    if not services:
-        await message.reply_text("No services found.")
-        return
+        api_key = args[1].strip()
+        # quick validation: try to get the authenticated user
+        try:
+            user_info = await render_request("GET", "/users", api_key)
+        except Exception as e:
+            await message.reply_text("Failed to validate API key: " + str(e))
+            return
 
-    text_lines = []
-    for svc in services:
-        # show id, name, type, live state and owner/workspace id
-        text_lines.append(f"{svc.get('id')}\n  • name: {svc.get('name')}\n  • type: {svc.get('type')}\n  • state: {svc.get('serviceDetails', {}).get('liveState') or svc.get('state')}\n")
-    await message.reply_text("\n\n".join(text_lines))
+        set_user_key(message.from_user.id, api_key)
+        # user_info often contains email/name in the response
+        pretty = json.dumps(user_info, indent=2) if isinstance(user_info, dict) else str(user_info)
+        await message.reply_text(f"Logged in. Associated user info:\n<pre>{pretty}</pre>", parse_mode="html")
+    except Exception:
+        tb = traceback.format_exc()
+        await message.reply_text(f"Error in /login:\n<pre>{tb}</pre>", parse_mode="html")
+
+@app.on_message(filters.command("view") & filters.private)
+async def view_handler(client: Client, message: Message):
+    try:
+        key = get_user_key(message.from_user.id)
+        await message.reply_text(f"API key: {mask_key(key)}")
+    except Exception:
+        tb = traceback.format_exc()
+        await message.reply_text(f"Error in /view:\n<pre>{tb}</pre>", parse_mode="html")
+
+@app.on_message(filters.command("logout") & filters.private)
+async def logout_handler(client: Client, message: Message):
+    try:
+        del_user_key(message.from_user.id)
+        await message.reply_text("Logged out and removed stored API key.")
+    except Exception:
+        tb = traceback.format_exc()
+        await message.reply_text(f"Error in /logout:\n<pre>{tb}</pre>", parse_mode="html")
+
+@app.on_message(filters.command("acc_info") & filters.private)
+async def acc_info_handler(client: Client, message: Message):
+    try:
+        api_key = get_user_key(message.from_user.id)
+        if not api_key:
+            return await message.reply_text("No Render API key stored. Use /login <api_key> first.")
+        user = await render_request("GET", "/users", api_key)
+        # Render returns user object with name/email fields (if available)
+        pretty = json.dumps(user, indent=2)
+        await message.reply_text(f"Authenticated user info:\n<pre>{pretty}</pre>", parse_mode="html")
+    except Exception:
+        tb = traceback.format_exc()
+        await message.reply_text(f"Error in /acc_info:\n<pre>{tb}</pre>", parse_mode="html")
+
+@app.on_message(filters.command("app") & filters.private)
+async def list_apps_handler(client: Client, message: Message):
+    try:
+        api_key = get_user_key(message.from_user.id)
+        if not api_key:
+            return await message.reply_text("No Render API key stored. Use /login <api_key> first.")
+        services = await render_request("GET", "/services?limit=200", api_key)
+        # services is usually a list of service objects
+        if not services:
+            return await message.reply_text("No services found.")
+        lines = []
+        for s in services:
+            # pick id and name and type and state
+            sid = s.get("id") or s.get("serviceId") or s.get("service_id")
+            name = s.get("name") or s.get("serviceName") or "<unnamed>"
+            s_type = s.get("serviceType") or s.get("type") or ""
+            state = s.get("state") or s.get("status") or ""
+            lines.append(f"{name}  —  id: {sid}  ({s_type})  [{state}]")
+        text = "Services:\n" + "\n".join(lines)
+        # if very long, send as file
+        if len(text) > 4000:
+            await message.reply_document(document=bytes(text, "utf-8"), file_name="services.txt")
+        else:
+            await message.reply_text(text)
+    except Exception:
+        tb = traceback.format_exc()
+        await message.reply_text(f"Error in /app:\n<pre>{tb}</pre>", parse_mode="html")
+
+# helper: find service by name (exact or case-insensitive)
+async def find_service_by_name(api_key: str, name: str):
+    services = await render_request("GET", "/services?limit=500", api_key)
+    if not isinstance(services, list):
+        raise RuntimeError("Unexpected services response")
+    name_lower = name.lower()
+    # exact match first, else startswith, else contains
+    for s in services:
+        if (s.get("name") or "").lower() == name_lower:
+            return s
+    for s in services:
+        if (s.get("name") or "").lower().startswith(name_lower):
+            return s
+    for s in services:
+        if name_lower in (s.get("name") or "").lower():
+            return s
+    return None
+
+@app.on_message(filters.command("del") & filters.private)
+async def delete_app_handler(client: Client, message: Message):
+    try:
+        args = message.text.split(maxsplit=1)
+        if len(args) < 2:
+            return await message.reply_text("Usage: /del <app_name>")
+        app_name = args[1].strip()
+        api_key = get_user_key(message.from_user.id)
+        if not api_key:
+            return await message.reply_text("No Render API key stored. Use /login <api_key> first.")
+        svc = await find_service_by_name(api_key, app_name)
+        if not svc:
+            return await message.reply_text("Service not found.")
+        sid = svc["id"]
+        await render_request("DELETE", f"/services/{sid}", api_key)
+        await message.reply_text(f"Deleted service {svc.get('name')} (id: {sid}).")
+    except Exception:
+        tb = traceback.format_exc()
+        await message.reply_text(f"Error in /del:\n<pre>{tb}</pre>", parse_mode="html")
 
 @app.on_message(filters.command("restart") & filters.private)
-@admin_only
-async def restart(service_client, message: Message):
-    if len(message.command) < 2:
-        await message.reply_text("Usage: /restart <service_id>")
-        return
-    service_id = message.command[1].strip()
-    api_key = get_api_key_for_chat(message.chat.id)
-    if not api_key:
-        await message.reply_text("No Render API key stored.")
-        return
+async def restart_handler(client: Client, message: Message):
     try:
-        await render_request("POST", f"/services/{service_id}/restart", api_key)
-        await message.reply_text(f"Restart requested for service `{service_id}`.")
-    except Exception as e:
-        await message.reply_text(f"Error: {e}")
+        args = message.text.split(maxsplit=1)
+        if len(args) < 2:
+            return await message.reply_text("Usage: /restart <app_name>")
+        app_name = args[1].strip()
+        api_key = get_user_key(message.from_user.id)
+        if not api_key:
+            return await message.reply_text("No Render API key stored. Use /login <api_key> first.")
+        svc = await find_service_by_name(api_key, app_name)
+        if not svc:
+            return await message.reply_text("Service not found.")
+        sid = svc["id"]
+        await render_request("POST", f"/services/{sid}/restart", api_key)
+        await message.reply_text(f"Restart triggered for {svc.get('name')} (id: {sid}).")
+    except Exception:
+        tb = traceback.format_exc()
+        await message.reply_text(f"Error in /restart:\n<pre>{tb}</pre>", parse_mode="html")
 
-@app.on_message(filters.command("scale") & filters.private)
-@admin_only
-async def scale(service_client, message: Message):
-    if len(message.command) < 3:
-        await message.reply_text("Usage: /scale <service_id> <instance_count>")
-        return
-    service_id = message.command[1].strip()
+@app.on_message(filters.command("env_vars") & filters.private)
+async def env_vars_handler(client: Client, message: Message):
     try:
-        count = int(message.command[2])
-    except ValueError:
-        await message.reply_text("instance_count must be an integer.")
-        return
-    api_key = get_api_key_for_chat(message.chat.id)
-    if not api_key:
-        await message.reply_text("No Render API key stored.")
-        return
-    try:
-        payload = {"instances": count}
-        await render_request("POST", f"/services/{service_id}/scale", api_key, json=payload)
-        await message.reply_text(f"Scale request sent: `{service_id}` -> {count} instances.")
-    except Exception as e:
-        await message.reply_text(f"Error: {e}")
+        args = message.text.split(maxsplit=1)
+        if len(args) < 2:
+            return await message.reply_text("Usage: /env_vars <app_name>")
+        app_name = args[1].strip()
+        api_key = get_user_key(message.from_user.id)
+        if not api_key:
+            return await message.reply_text("No Render API key stored. Use /login <api_key> first.")
+        svc = await find_service_by_name(api_key, app_name)
+        if not svc:
+            return await message.reply_text("Service not found.")
+        sid = svc["id"]
+        envs = await render_request("GET", f"/services/{sid}/env-vars", api_key)
+        pretty = json.dumps(envs, indent=2)
+        await message.reply_text(f"Env vars for {svc.get('name')}:\n<pre>{pretty}</pre>", parse_mode="html")
+    except Exception:
+        tb = traceback.format_exc()
+        await message.reply_text(f"Error in /env_vars:\n<pre>{tb}</pre>", parse_mode="html")
 
 @app.on_message(filters.command("env_set") & filters.private)
-@admin_only
-async def env_set(client, message: Message):
-    if len(message.command) < 3:
-        await message.reply_text("Usage: /env_set <service_id> KEY=VALUE[,KEY2=VALUE2,...]\nThis will REPLACE all env vars for the service with the ones you provide.")
-        return
-    service_id = message.command[1].strip()
-    kvs_raw = " ".join(message.command[2:])
-    # simple parse KEY=VALUE,KEY2=VALUE2...
-    pairs = []
-    for part in kvs_raw.split(","):
-        if "=" not in part:
-            continue
-        k, v = part.split("=", 1)
-        pairs.append({"name": k.strip(), "value": v.strip(), "type": "env"})
-    if not pairs:
-        await message.reply_text("No valid KEY=VALUE pairs found.")
-        return
-    api_key = get_api_key_for_chat(message.chat.id)
-    if not api_key:
-        await message.reply_text("No Render API key stored.")
-        return
+async def env_set_handler(client: Client, message: Message):
     try:
-        # Render expects a list of env var objects. This endpoint *replaces* all env vars.
-        await render_request("PUT", f"/services/{service_id}/env-vars", api_key, json=pairs)
-        await message.reply_text("Environment variables updated (replacement).")
-    except Exception as e:
-        await message.reply_text(f"Error: {e}")
+        parts = message.text.split(maxsplit=3)
+        if len(parts) < 4:
+            return await message.reply_text("Usage: /env_set <app_name> KEY VALUE")
+        _, app_name, key, value = parts
+        api_key = get_user_key(message.from_user.id)
+        if not api_key:
+            return await message.reply_text("No Render API key stored. Use /login <api_key> first.")
+        svc = await find_service_by_name(api_key, app_name)
+        if not svc:
+            return await message.reply_text("Service not found.")
+        sid = svc["id"]
+        # PUT to /services/{serviceId}/env-vars/{envVarKey}
+        body = {"value": value}
+        await render_request("PUT", f"/services/{sid}/env-vars/{key}", api_key, json=body)
+        await message.reply_text(f"Set env var {key} for {svc.get('name')}. Note: changes won't auto-deploy. Call /restart or trigger a deploy.")
+    except Exception:
+        tb = traceback.format_exc()
+        await message.reply_text(f"Error in /env_set:\n<pre>{tb}</pre>", parse_mode="html")
 
-# Error handler (basic)
-@app.on_message(filters.private & filters.command)
-async def fallback(client, message):
-    # any unknown command
-    known = {"start","setkey","getkey","list_services","restart","scale","env_set"}
-    cmd = message.command[0].lstrip("/")
-    if cmd not in known:
-        await message.reply_text("Unknown command. Use /start to see available commands.")
+@app.on_message(filters.command("env_del") & filters.private)
+async def env_del_handler(client: Client, message: Message):
+    try:
+        parts = message.text.split(maxsplit=2)
+        if len(parts) < 3:
+            return await message.reply_text("Usage: /env_del <app_name> KEY")
+        _, app_name, key = parts
+        api_key = get_user_key(message.from_user.id)
+        if not api_key:
+            return await message.reply_text("No Render API key stored. Use /login <api_key> first.")
+        svc = await find_service_by_name(api_key, app_name)
+        if not svc:
+            return await message.reply_text("Service not found.")
+        sid = svc["id"]
+        await render_request("DELETE", f"/services/{sid}/env-vars/{key}", api_key)
+        await message.reply_text(f"Deleted env var {key} for {svc.get('name')}.")
+    except Exception:
+        tb = traceback.format_exc()
+        await message.reply_text(f"Error in /env_del:\n<pre>{tb}</pre>", parse_mode="html")
 
+# global exception handler (for safety)
+@app.on_message(filters.command(["help", "commands"]) & filters.private)
+async def help_handler(client: Client, message: Message):
+    await start_handler(client, message)
+
+# run bot
 if __name__ == "__main__":
-    print("Starting Render management bot...")
-    app.run()
+    try:
+        print("Starting Pyrofork Render-management bot...")
+        app.run()
+    except Exception:
+        traceback.print_exc()
