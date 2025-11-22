@@ -345,10 +345,5 @@ async def env_del_handler(client: Client, message: Message):
 async def help_handler(client: Client, message: Message):
     await start_handler(client, message)
 
-# run bot
-if __name__ == "__main__":
-    try:
-        print("Starting Pyrofork Render-management bot...")
-        app.run()
-    except Exception:
-        traceback.print_exc()
+
+app.run()
