@@ -1,9 +1,10 @@
 import os
 import requests
 import time
-from config import BOT_TOKEN
+
 
 url = os.environ.get("url", "https://repo_name.onrender.com")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 
 #----------------------------------------------------------------------------------------------
 
