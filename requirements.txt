@@ -10,3 +10,5 @@ Jinja2
 werkzeug
 itsdangerous
 aiohttp
+
+python-dotenv
