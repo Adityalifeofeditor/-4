@@ -11,4 +11,4 @@ werkzeug
 itsdangerous
 aiohttp
 
-python-dotenv
+google-genai 
