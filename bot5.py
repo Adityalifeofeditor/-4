@@ -543,14 +543,14 @@ async def callback(_, cq):
 
         # Form follow-up prompt variations
         if action == "explain":
-            prompt = f"Explain more about the following question and answer. Question: {question}
-Previous answer: {last['answer']}. Provide a deeper explanation and examples where useful." 
+            prompt = f"""Explain more about the following question and answer. Question: {question}
+Previous answer: {last['answer']}. Provide a deeper explanation and examples where useful.""" 
         elif action == "summarize":
-            prompt = f"Provide a concise summary (3-5 lines) of the answer to: {question}
-Previous answer: {last['answer']}"
+            prompt = f"""Provide a concise summary (3-5 lines) of the answer to: {question}
+Previous answer: {last['answer']}"""
         elif action == "code":
-            prompt = f"Give a clear, minimal code example that demonstrates the answer to: {question}
-If multiple languages are possible, prefer Python and include brief comments." 
+            prompt = f"""Give a clear, minimal code example that demonstrates the answer to: {question}
+If multiple languages are possible, prefer Python and include brief comments."""
         else:
             await cq.answer()
             return
