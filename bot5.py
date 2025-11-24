@@ -462,8 +462,7 @@ async def ask(_, msg):
     header = format_header(question)
     chunks = list(chunk_text(answer))
     first_chunk = chunks[0] if chunks else "(No answer)"
-    await status.edit_text(header + "
-" + first_chunk, reply_markup=followup_keyboard())
+    await status.edit_text(header + "" + first_chunk, reply_markup=followup_keyboard())
 
     # Send remaining chunks as separate replies
     for chunk in chunks[1:]:
@@ -570,10 +569,10 @@ If multiple languages are possible, prefer Python and include brief comments."
             await sessions_col.update_one({"user_id": uid}, {"$set": {"last_answer": user_states[uid]["last_answer"], "updated": datetime.now(timezone.utc)}}, upsert=True)
 
         # Reply with follow-up content
-        header = f"*Follow-up ({action}):*
+        header = f"""*Follow-up ({action}):*
 > {question}
 
-"
+"""
         chunks = list(chunk_text(follow_ans))
         first = chunks[0] if chunks else "(No answer)"
         await cq.message.reply(header + first)
