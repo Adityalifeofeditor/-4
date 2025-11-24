@@ -307,18 +307,11 @@ async def start(_, msg):
             pass
 
     await msg.reply(
-        "👋 *Welcome to Gemini AI Ask Bot*
-
-"
-        "You can ask questions in 3 ways:
-"
-        "• `/ask your question`
-"
-        "• Reply to any message with `/ask`
-"
-        "• Send `/ask` alone and I will wait for your question
-
-"
+        "👋 *Welcome to Gemini AI Ask Bot*"
+        "You can ask questions in 3 ways:"
+        "• `/ask your question`"
+        "• Reply to any message with `/ask`"
+        "• Send `/ask` alone and I will wait for your question"
         "Use /help for full info.",
         reply_markup=main_keyboard()
     )
@@ -326,25 +319,15 @@ async def start(_, msg):
 @app.on_message(filters.command("help"))
 async def help_cmd(_, msg):
     await msg.reply(
-        "*Commands*
-
-"
-        "• `/ask <question>` — Ask instantly
-"
-        "• Reply to a message with `/ask`
-"
-        "• `/ask` alone — I wait for your next message
-"
-        "• `/restart` — Clear pending request
-"
-        "• `/stats` — Show usage statistics and uptime
-"
-        "• `/balance` — Show your points balance
-"
-        "• `/refer` — Get your referral link to earn 5 points per referral
-"
-        "Admin-only: `/add_points <user_id> <amount>`, `/remove_points <user_id> <amount>`, `/ban <user_id> [reason]`, `/unban <user_id>`
-"
+        "*Commands*"
+        "• `/ask <question>` — Ask instantly"
+        "• Reply to a message with `/ask`"
+        "• `/ask` alone — I wait for your next message"
+        "• `/restart` — Clear pending request"
+        "• `/stats` — Show usage statistics and uptime"
+        "• `/balance` — Show your points balance"
+        "• `/refer` — Get your referral link to earn 5 points per referral"
+        "Admin-only: `/add_points <user_id> <amount>`, `/remove_points <user_id> <amount>`, `/ban <user_id> [reason]`, `/unban <user_id>`"
     )
 
 @app.on_message(filters.command("restart"))
@@ -361,11 +344,9 @@ async def stats(_, msg):
     hours, remainder = divmod(int(uptime.total_seconds()), 3600)
     minutes, seconds = divmod(remainder, 60)
     await msg.reply(
-        f"*Your Stats:*
-Questions asked: {user_stats[uid]}
-"
-        f"*Total Questions:* {total_stats}
-"
+        f"*Your Stats:*"
+        f"Questions asked: {user_stats[uid]}"
+        f"*Total Questions:* {total_stats}"
         f"*Uptime:* {hours}h {minutes}m {seconds}s"
     )
 
@@ -526,8 +507,7 @@ async def catch_text(_, msg):
         header = format_header(msg.text)
         chunks = list(chunk_text(answer))
         first_chunk = chunks[0] if chunks else "(No answer)"
-        await status.edit_text(header + "
-" + first_chunk, reply_markup=followup_keyboard())
+        await status.edit_text(header + " " + first_chunk, reply_markup=followup_keyboard())
         for chunk in chunks[1:]:
             await msg.reply(chunk)
 
