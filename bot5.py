@@ -6,8 +6,8 @@ from collections import defaultdict
 from datetime import datetime, timezone, date
 from dotenv import load_dotenv
 
-from pyrofork import Client, filters
-from pyrofork.types import InlineKeyboardMarkup, InlineKeyboardButton
+from pyrogram import Client, filters
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from google import genai
 
 # Optional async MongoDB driver
