@@ -215,10 +215,10 @@ async def can_ask(uid: int):
 
 # Format helpful markdown reply header
 def format_header(question: str):
-    return f"*Question:*
+    return f"""**Question:**
 > {textwrap.shorten(question, width=400, placeholder='...')}
 
-*Answer:*"
+**Answer:**"""
 
 # Commands to set bot commands and notify owner
 def reset_and_set_commands():
@@ -250,10 +250,7 @@ def notify_owner():
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     data = {
         "chat_id": OWNER_ID,
-        "text": "BOT is Live Now 🤖
-
-📝 Send /drm & Choose Quality
-😎 Aur Maze kro"
+        "text": "BOT is Live Now 🤖"
     }
     try:
         requests.post(url, data=data, timeout=5)
