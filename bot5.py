@@ -372,10 +372,7 @@ async def refer_cmd(_, msg):
         u = await users_col.find_one({"user_id": uid})
         refs = u.get("referrals", 0) if u else 0
 
-    await msg.reply(f"🔗 Your referral link: {link}
-
-Referrals: {refs}
-Earn 5 points for each new user who starts with your link.")
+    await msg.reply(f"🔗 Your referral link: {link}\nReferrals: {refs}\nEarn 5 points for each new user who starts with your link.")
 
 # Admin utility commands
 @app.on_message(filters.command("add_points"))
