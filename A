@@ -1,0 +1,14 @@
+sos = await app.ask(
+        message.chat.id,
+        text=(
+            "📥 **Send me your Channel or Group ID.**\n\n"
+            "Or send a post link like:\n"
+            "`https://t.me/c/123456789/123`\n"
+            "`https://t.me/c/123456789/25/123`\n\n"
+            "Send `/quit` to cancel."
+        ),
+    )
+
+    user_input = sos.text.strip()
+    if user_input.lower() == "/quit":
+        return await message.reply_text("<b><i>❌ The process has been cancelled.</i></b>")
