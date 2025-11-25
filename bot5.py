@@ -35,12 +35,22 @@ if not all([AI_BOT_TOKEN, API_ID, API_HASH]):
 # === CLIENT SETUP ===
 app = Client("gemini_ask_bot", bot_token=AI_BOT_TOKEN, api_id=API_ID, api_hash=API_HASH)
 
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-    gemini_model = genai.GenerativeModel('gemini-1.5-flash')
-else:
-    gemini_model = None
+# Gemini query wrapper (runs in executor to avoid blocking)
+async def query_gemini(prompt: str):
+    if not gemini:
+        raise RuntimeError("Gemini API key not configured")
 
+    loop = asyncio.get_event_loop()
+
+    def _call():
+        res = gemini.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt
+        )
+        return getattr(res, "text", None) or str(res)
+
+    return await loop.run_in_executor(None, _call)
+    
 # === DATABASE SETUP ===
 if MONGO_URI and mongo_available:
     mongo_client = motor.AsyncIOMotorClient(MONGO_URI)
