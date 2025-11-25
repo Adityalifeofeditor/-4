@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.enums import ParseMode
-import google.generativeai as genai
+from google import genai
 
 # Optional async MongoDB
 try:
@@ -183,6 +183,26 @@ def format_header(q: str) -> str:
 def is_admin(uid: int) -> bool:
     return uid == OWNER_ID or uid in ADMIN_IDS
 
+# Commands to set bot commands and notify owner
+def reset_and_set_commands():
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/setMyCommands"
+    # Reset
+    requests.post(url, json={"commands": []})
+    # Set new
+    commands = [
+        {"command": "start", "description": "✅ ᴄʜᴇᴄᴋ ɪꜰ ᴛʜᴇ ʙᴏᴛ ɪꜱ ᴀʟɪᴠᴇ"},
+        {"command": "stop", "description": "⏹️ ᴛᴇʀᴍɪɴᴀᴛᴇ ᴛʜᴇ ᴏɴɢᴏɪɴɢ ᴘʀᴏᴄᴇꜱꜱ"},
+        {"command": "reset", "description": "♻️ ʀᴇꜱᴇᴛ ᴛʜᴇ ʙᴏᴛ"},
+        {"command": "restart", "description": "♻️ ʀᴇꜱᴛᴀʀᴛ ᴛʜᴇ ʙᴏᴛ"},
+        {"command": "logs", "description": "👁 ᴠɪᴇᴡ ʙᴏᴛ ᴀᴄᴛɪᴠɪᴛʏ"},
+        {"command": "myplan", "description": "⏸️ ᴄʜᴇᴄᴋ ʏᴏᴜʀ ᴄᴜʀʀᴇɴᴛ ᴘʟᴀɴ"},
+        {"command": "refer", "description": "🔗 ɢᴇᴛ ʏᴏᴜʀ ʀᴇꜰᴇʀʀᴀʟ ʟɪɴᴋ"},
+        {"command": "balance", "description": "💳 ᴄʜᴇᴄᴋ ʏᴏᴜʀ ᴘᴏɪɴᴛs"},
+        {"command": "ask", "description": "💬 ᴀsᴋ ɢᴇᴍɪɴɪ ᴀɪ ᴀ ǫᴜᴇsᴛɪᴏɴ"},
+    ]
+
+    requests.post(url, json={"commands": commands})
+
 # === STARTUP ===
 def startup_tasks():
     if OWNER_ID:
@@ -194,7 +214,10 @@ def startup_tasks():
             )
         except:
             pass
-
+    try:
+        reset_and_set_commands()
+    except Exception:
+        pass
 # === COMMANDS ===
 @app.on_message(filters.command("start"))
 async def start(_, msg):
