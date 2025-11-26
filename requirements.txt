@@ -12,3 +12,4 @@ itsdangerous
 aiohttp
 
 google-genai 
+motor
