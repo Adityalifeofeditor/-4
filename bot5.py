@@ -61,9 +61,8 @@ async def init_db():
     global db_client, db, gemini_client
     db_client = motor.AsyncIOMotorClient(MONGO_URI)
     # default database derived from URI or 'askbot'
-    dbname = db_client.get_default_database().name if db_client.get_default_database() else "askbot"
+    dbname = "askbot"
     db = db_client[dbname]
-
     # Ensure indexes
     await db.users.create_index("points")
     await db.users.create_index("stats")
@@ -353,13 +352,15 @@ async def ask(_, msg):
     if user_doc.get("banned"):
         return await msg.reply("🚫 You are banned from using this bot.")
 
-    # 1) Inline: /ask question
-    if len(msg.command) > 1:
-        question = " ".join(msg.command[1:])
+
 
     # 2) Replied message
-    elif msg.reply_to_message and msg.reply_to_message.text:
+    if msg.reply_to_message and msg.reply_to_message.text:
         question = msg.reply_to_message.text
+
+    # 2) Inline: /ask question
+    elif len(msg.command) > 1:
+        question = " ".join(msg.command[1:])
 
     # 3) Ask for user input
     else:
@@ -464,6 +465,4 @@ async def _startup():
 
 # run the bot with startup
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(_startup())
     app.run()
