@@ -348,9 +348,9 @@ async def ask(_, msg):
     uid = msg.from_user.id
 
     # Check banned
-    user_doc = await get_user(uid)
-    if user_doc.get("banned"):
-        return await msg.reply("🚫 You are banned from using this bot.")
+    #user_doc = await get_user(uid)
+    #if user_doc.get("banned"):
+        #return await msg.reply("🚫 You are banned from using this bot.")
 
 
 
@@ -409,7 +409,7 @@ async def callback(_, cq):
 
 
 @app.on_message(filters.command("see"))
-async def see_cmd(client, message):
+async def see_cmd(app, message):
 
     # =====================================================
     # 1) CASE: USER SENDS `/see something here`
@@ -440,7 +440,7 @@ async def see_cmd(client, message):
     # =====================================================
     # 3) FALLBACK CASE: use ask() for input
     # =====================================================
-    ask_msg = await client.ask(
+    ask_msg = await app.ask(
         chat_id=message.chat.id,
         text="👀 **Send me something to display**"
     )
