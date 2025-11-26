@@ -451,13 +451,6 @@ async def see_cmd(client, message):
 
 
 
-# ---------- Startup / shutdown ----------
-@app.on_private_message()
-async def ensure_user_exists(_, msg):
-    # ensure user doc exists when they DM bot
-    await get_user(msg.from_user.id)
-
-
 @app.on_message(filters.command("ping"))
 async def ping(_, msg):
     await msg.reply("pong")
