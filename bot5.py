@@ -1,661 +1,341 @@
-"""
-Gemini AI Telegram Bot (full working example)
-
-- Single-file bot you can run as `python bot.py`
-- Uses Pyrogram Client and optionally motor (async MongoDB)
-- Uses google.genai if GEMINI_API_KEY provided
-- /admin_settings command shows an admin panel with buttons for:
-  Add Points, Remove Points, Ban, Unban, All Ban List, API Key (view/set)
-- Works with MongoDB when MONGO_URI + motor installed; otherwise uses in-memory dicts
-- Good comments throughout for easy understanding
-"""
-
+# bot.py
 import os
-import textwrap
 import asyncio
-from collections import defaultdict
-from datetime import datetime, timezone, date
+import textwrap
+from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
-from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+from pyrogram import Client, filters, ContinuePropagation
+from pyrogram.types import (
+    InlineKeyboardMarkup, InlineKeyboardButton,
+    BotCommand
+)
 from pyrogram.enums import ParseMode
 
-# Optional: motor (async MongoDB)
+import google.generativeai as genai
+
+# Optional async MongoDB
 try:
     import motor.motor_asyncio as motor
-    mongo_available = True
+    MONGO_AVAILABLE = True
 except ImportError:
-    mongo_available = False
-
-# Optional: google genai for Gemini (if you want to use official lib)
-try:
-    from google import genai
-    genai_available = True
-except Exception:
-    genai_available = False
+    MONGO_AVAILABLE = False
 
 load_dotenv()
 
-# === ENV VARIABLES ===
-AI_BOT_TOKEN = os.getenv("AI_BOT_TOKEN")
-API_ID = os.getenv("API_ID")
+# === REQUIRED ENV VARIABLES ONLY ===
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")  # optional
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 MONGO_URI = os.getenv("MONGO_URI")
 OWNER_ID = int(os.getenv("OWNER_ID")) if os.getenv("OWNER_ID") else None
-BOT_USERNAME = os.getenv("BOT_USERNAME", "").strip("@")
-ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()]
+start_points = int(os.getenv("start_points", "50"))
+bonus_points = int(os.getenv("bonus_points", "20"))
 
-# Basic validation
-if not all([AI_BOT_TOKEN, API_ID, API_HASH]):
-    raise RuntimeError("Missing required .env variables: AI_BOT_TOKEN, API_ID, API_HASH")
+if not all([BOT_TOKEN, API_ID, API_HASH]):
+    raise RuntimeError("BOT_TOKEN, API_ID, API_HASH are required!")
 
-API_ID = int(API_ID)
-app = Client("gemini_ask_bot", bot_token=AI_BOT_TOKEN, api_id=API_ID, api_hash=API_HASH)
+app = Client("gemini_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# === GLOBALS & FALLBACKS ===
-# Mongo collections (if available)
-if MONGO_URI and mongo_available:
-    mongo_client = motor.AsyncIOMotorClient(MONGO_URI)
-    db = mongo_client["gemini_bot"]
-    users_col = db.users
-    sessions_col = db.sessions
-    settings_col = db.settings  # store bot settings like gemini_api_key
+# MongoDB Setup
+if MONGO_AVAILABLE and MONGO_URI:
+    mongo = motor.AsyncIOMotorClient(MONGO_URI)
+    db = mongo.gemini_bot
+    users = db.users
+    stats = db.stats
+    bans = db.bans
+    api_keys = db.api_keys
 else:
-    users_col = sessions_col = settings_col = None
+    raise RuntimeError("MongoDB (motor) and MONGO_URI are required!")
 
-# In-memory fallback state
-user_states = defaultdict(lambda: {
-    "points": 50,
-    "banned": False,
-    "referrals": 0,
-    "last_refill": None,
-    "last_answer": None,
-    "awaiting": False
-})
-user_stats = defaultdict(int)  # questions asked per user
-total_stats = 0
-total_users_set = set()
+# Global active API key (admin can override)
+async def get_active_api_key():
+    key_doc = await api_keys.find_one({"_id": "current"})
+    return key_doc["key"] if key_doc else GEMINI_API_KEY
+
+async def configure_gemini():
+    key = await get_active_api_key()
+    if key:
+        genai.configure(api_key=key)
+
+# Startup Tasks
+async def startup_tasks():
+    await configure_gemini()
+    await app.set_bot_commands([
+        BotCommand("start", "Start the bot"),
+        BotCommand("ask", "Ask Gemini AI"),
+        BotCommand("balance", "Check your points"),
+        BotCommand("bonus", "Get daily bonus (20 points)"),
+        BotCommand("refer", "Get referral link"),
+        BotCommand("stats", "Bot statistics"),
+        BotCommand("admin_settings", "Admin panel (owner only)"),
+        BotCommand("restart", "Restart bot (admin only)"),
+    ])
+    if OWNER_ID:
+        try:
+            await app.send_message(OWNER_ID, "Gemini AI Bot is now LIVE!")
+        except:
+            pass
+
+# Helper: Admin Check
+def is_owner_or_admin(user_id: int):
+    return user_id == OWNER_ID
+
+# Helper: Uptime
 START_TIME = datetime.now(timezone.utc)
 
-# Bot runtime settings (persisted in DB if available)
-bot_settings = {
-    "gemini_api_key": GEMINI_API_KEY or None
-}
+def format_uptime():
+    delta = datetime.now(timezone.utc) - START_TIME
+    hours, rem = divmod(int(delta.total_seconds()), 3600)
+    minutes, seconds = divmod(rem, 60)
+    return f"{hours}h {minutes}m {seconds}s"
 
-# If genai is available and key provided, initialize client
-gemini_model = None
-if genai_available and bot_settings["gemini_api_key"]:
-    try:
-        genai.configure(api_key=bot_settings["gemini_api_key"])
-        gemini_model = genai
-    except Exception:
-        gemini_model = None
+# === USER MANAGEMENT ===
+async def get_user(user_id: int):
+    user = await users.find_one({"_id": user_id})
+    if not user:
+        user = {
+            "_id": user_id,
+            "points": start_points,
+            "last_bonus": None,
+            "total_questions": 0,
+            "join_date": datetime.now(timezone.utc)
+        }
+        await users.insert_one(user)
+        await stats.update_one({"_id": "global"}, {"$inc": {"total_users": 1}}, upsert=True)
+    return user
 
-# === KEYBOARDS ===
-def main_keyboard():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("Ask a Question", callback_data="ask_btn")],
-        [InlineKeyboardButton("Help", callback_data="help_btn"), InlineKeyboardButton("Stats", callback_data="stats_btn")]
-    ])
+async def deduct_point(user_id: int):
+    await users.update_one({"_id": user_id}, {
+        "$inc": {"points": -1, "total_questions": 1}
+    })
+    await stats.update_one({"_id": "global"}, {"$inc": {"total_questions": 1}}, upsert=True)
 
-def followup_keyboard():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("Explain More", callback_data="follow_explain"),
-         InlineKeyboardButton("Summarize", callback_data="follow_summarize")],
-        [InlineKeyboardButton("Code Example", callback_data="follow_code")],
-        [InlineKeyboardButton("« Back", callback_data="ask_btn")]
-    ])
-
-# Admin panel keyboard (shown by /admin_settings)
+# === ADMIN PANEL KEYBOARD ===
 def admin_panel_keyboard():
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("➕ Add Points", callback_data="admin_add_points"),
-            InlineKeyboardButton("➖ Remove Points", callback_data="admin_remove_points")
+            InlineKeyboardButton("Add Points", callback_data="admin_add_points"),
+            InlineKeyboardButton("Remove Points", callback_data="admin_remove_points")
         ],
         [
-            InlineKeyboardButton("🚫 Ban", callback_data="admin_ban"),
-            InlineKeyboardButton("✅ Unban", callback_data="admin_unban")
+            InlineKeyboardButton("Ban User", callback_data="admin_ban"),
+            InlineKeyboardButton("Unban User", callback_data="admin_unban")
         ],
         [
-            InlineKeyboardButton("📋 All Ban List", callback_data="admin_ban_list"),
-            InlineKeyboardButton("🔑 API Key", callback_data="admin_api_key")
+            InlineKeyboardButton("Ban List", callback_data="admin_ban_list"),
+            InlineKeyboardButton("Set API Key", callback_data="admin_api_key")
         ],
         [InlineKeyboardButton("Close", callback_data="admin_close")]
     ])
 
-# === UTILITIES: DB / in-memory abstraction ===
-
-async def get_user_doc(uid: int):
-    """Return user document from DB or in-memory state."""
-    if users_col:
-        user = await users_col.find_one({"user_id": uid})
-        return user
-    return user_states[uid]
-
-async def ensure_user(uid: int, ref_param: str | None = None):
-    """Ensure user exists in DB or in-memory. Reward referral if present."""
-    total_users_set.add(uid)
-    if users_col:
-        user = await users_col.find_one({"user_id": uid})
-        if not user:
-            doc = {
-                "user_id": uid,
-                "points": 50,
-                "banned": False,
-                "referrals": 0,
-                "last_refill": datetime.now(timezone.utc).isoformat(),
-                "joined_at": datetime.now(timezone.utc).isoformat(),
-                "referred_by": None
-            }
-            # handle referral param like "ref12345"
-            if ref_param and ref_param.startswith("ref"):
-                try:
-                    ref_id = int(ref_param[3:])
-                    if ref_id != uid:
-                        await users_col.update_one(
-                            {"user_id": ref_id},
-                            {"$inc": {"points": 5, "referrals": 1}}
-                        )
-                        doc["referred_by"] = ref_id
-                        try:
-                            await app.send_message(ref_id, "🎉 You earned 5 points! Someone joined via your link!")
-                        except:
-                            pass
-                except:
-                    pass
-            await users_col.insert_one(doc)
-            return doc
-        return user
-    else:
-        # triggers creation via defaultdict when accessing user_states[uid]
-        user_states[uid]
-        return user_states[uid]
-
-async def get_points(uid: int) -> int:
-    user = await get_user_doc(uid)
-    return user.get("points", 50) if user else 50
-
-async def deduct_points(uid: int, amount: int = 1):
-    if users_col:
-        await users_col.update_one({"user_id": uid}, {"$inc": {"points": -amount}})
-    else:
-        user_states[uid]["points"] = max(0, user_states[uid]["points"] - amount)
-
-async def add_points(uid: int, amount: int):
-    if users_col:
-        await users_col.update_one({"user_id": uid}, {"$inc": {"points": amount}}, upsert=True)
-    else:
-        user_states[uid]["points"] = user_states[uid].get("points", 50) + amount
-
-async def set_ban(uid: int, banned: bool, reason: str | None = None):
-    if users_col:
-        await users_col.update_one({"user_id": uid}, {"$set": {"banned": banned, "ban_reason": reason}}, upsert=True)
-    else:
-        user_states[uid]["banned"] = banned
-        user_states[uid]["ban_reason"] = reason
-
-async def list_all_banned():
-    if users_col:
-        cursor = users_col.find({"banned": True}, {"user_id": 1, "ban_reason": 1})
-        rows = []
-        async for d in cursor:
-            rows.append((d.get("user_id"), d.get("ban_reason", "No reason")))
-        return rows
-    else:
-        return [(uid, s.get("ban_reason", "No reason")) for uid, s in user_states.items() if s.get("banned")]
-
-# daily refill logic (keeps track of last_refill)
-async def daily_refill(uid: int):
-    today = date.today().isoformat()
-    user = await get_user_doc(uid)
-    last_refill = None
-    if user:
-        last_refill = user.get("last_refill", "")
-        last_refill = last_refill.split("T")[0] if last_refill else None
-    if last_refill != today:
-        if users_col:
-            await users_col.update_one(
-                {"user_id": uid},
-                {"$inc": {"points": 20}, "$set": {"last_refill": datetime.now(timezone.utc).isoformat()}},
-                upsert=True
-            )
-        else:
-            user_states[uid]["points"] += 20
-            user_states[uid]["last_refill"] = today
-
-async def can_ask(uid: int):
-    """Check if user can ask: not banned and has points (after refill)."""
-    await ensure_user(uid)
-    await daily_refill(uid)
-    user = await get_user_doc(uid)
-    if user and user.get("banned"):
-        reason = user.get("ban_reason", "No reason given.")
-        return False, f"You are banned. Reason: {reason}"
-    points = await get_points(uid)
-    if points <= 0:
-        return False, "No points left! Come back tomorrow for +20 bonus points."
-    return True, None
-
-def format_header(q: str) -> str:
-    short = textwrap.shorten(q, width=300, placeholder="...")
-    return f"<b>Question:</b>\n<blockquote expandable>{short}</blockquote>\n\n<b>Answer:</b>\n"
-
-def is_admin(uid: int) -> bool:
-    return uid == OWNER_ID or uid in ADMIN_IDS
-
-# === Gemini Query Wrapper ===
-async def query_gemini(prompt: str) -> str:
-    """
-    Query Gemini model (genai). If unavailable returns an explanatory string.
-    This runs the blocking call inside a thread to avoid blocking the event loop.
-    """
-    if not gemini_model:
-        # No model configured: return helpful message
-        return "Gemini API not configured. Admins can set it via /admin_settings → API Key."
-    try:
-        # If using google.genai, call model.generate_content in a thread
-        def _call():
-            # adapt to genai usage - may vary depending on your genai version
-            res = gemini_model.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=prompt
-            )
-            return getattr(res, "text", None) or str(res)
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, _call)
-    except Exception as e:
-        return f"Gemini Error: {e}"
-
-# === Bot command helpers ===
-async def reset_and_set_commands():
-    """Optional: set telegram bot commands using the HTTP API (simple)."""
-    url = f"https://api.telegram.org/bot{AI_BOT_TOKEN}/setMyCommands"
-    commands = [
-        {"command": "start", "description": "✅ Check if bot is alive"},
-        {"command": "ask", "description": "💬 Ask Gemini something"},
-        {"command": "balance", "description": "💳 Check your points"},
-        {"command": "refer", "description": "🔗 Get referral link"},
-        {"command": "stats", "description": "📊 Bot statistics"},
-        {"command": "restart", "description": "♻️ Cancel waiting input"},
-        {"command": "admin_settings", "description": "🔒 Admin panel (admins only)"}
-    ]
-    try:
-        import requests
-        requests.post(url, json={"commands": commands}, timeout=10)
-    except Exception:
-        pass
-
-def startup_tasks():
-    """Run on startup: notify owner and set commands."""
-    if OWNER_ID:
+# === COMMANDS ===
+@app.on_message(filters.command("start"))
+async def start(client: Client, msg):
+    user_id = msg.from_user.id
+    await get_user(user_id)
+    
+    ref_id = None
+    if len(msg.command) > 1 and msg.command[1].startswith("ref"):
         try:
-            import requests
-            requests.post(
-                f"https://api.telegram.org/bot{AI_BOT_TOKEN}/sendMessage",
-                data={"chat_id": OWNER_ID, "text": "Gemini AI Bot is now LIVE!"},
-                timeout=10
-            )
-        except Exception:
-            pass
-    try:
-        asyncio.get_event_loop().create_task(async_reset_commands())
-    except Exception:
-        # fallback sync
-        try:
-            reset_and_set_commands()
+            ref_id = int(msg.command[1][3:])
+            if ref_id != user_id:
+                await users.update_one({"_id": ref_id}, {"$inc": {"points": 5}})
         except:
             pass
 
-async def async_reset_commands():
-    # run set commands in thread to avoid blocking
-    await asyncio.get_event_loop().run_in_executor(None, reset_and_set_commands)
-
-# === COMMAND HANDLERS ===
-
-@app.on_message(filters.command("start"))
-async def start(_, msg):
-    ref = msg.command[1] if len(msg.command) > 1 else None
-    await ensure_user(msg.from_user.id, ref)
-    await msg.reply_text(
-        "<b>🤖 Welcome to Gemini AI Bot!</b>\n\n"
+    text = (
+        "<b>Welcome to Gemini AI Bot!</b>\n\n"
         "Ask anything using:\n"
-        "• <code>/ask What is quantum physics?</code>\n"
+        "• <code>/ask What is Python?</code>\n"
         "• Reply to any message with /ask\n"
-        "• Just type /ask → I’ll wait for your question\n\n"
-        "<i>Powered by Google Gemini • Smart & Fast</i>",
-        reply_markup=main_keyboard(),
-        parse_mode=ParseMode.HTML
+        "• Just type /ask and send your question\n\n"
+        "<i>Each question costs 1 point</i>\n"
+        "Use /bonus once daily for +20 points!"
     )
-
-@app.on_message(filters.command("help"))
-async def help_cmd(_, msg):
-    await msg.reply_text(
-        "<b>🆘 Help & Commands</b>\n\n"
-        "/ask - Ask a question\n"
-        "/balance - Check your points\n"
-        "/refer - Get your referral link (+5 pts each)\n"
-        "/stats - Bot statistics\n"
-        "/restart - Cancel waiting input\n"
-        "/admin_settings - Admin panel (admins only)\n\n"
-        "<i>New users get 50 points • +20 daily bonus</i>",
-        parse_mode=ParseMode.HTML
-    )
+    await msg.reply(text, parse_mode=ParseMode.HTML)
 
 @app.on_message(filters.command("balance"))
-async def balance(_, msg):
-    points = await get_points(msg.from_user.id)
-    await msg.reply_text(f"<b>💰 Your Points:</b> {points}", parse_mode=ParseMode.HTML)
+async def balance(client: Client, msg):
+    user = await get_user(msg.from_user.id)
+    await msg.reply(f"<b>Your Points:</b> {user['points']}", parse_mode=ParseMode.HTML)
+
+@app.on_message(filters.command("bonus"))
+async def bonus(client: Client, msg):
+    user = await get_user(msg.from_user.id)
+    now = datetime.now(timezone.utc)
+    last = user.get("last_bonus")
+    
+    if last:
+        last_time = datetime.fromisoformat(last)
+        next_available = last_time + timedelta(days=1)
+        if now < next_available:
+            remaining = next_available - now
+            hours, remainder = divmod(remaining.seconds, 3600)
+            minutes, _ = divmod(remainder, 60)
+            return await msg.reply(
+                f"You can use /bonus again in <b>{hours}h {minutes}m</b>",
+                parse_mode=ParseMode.HTML
+            )
+    
+    await users.update_one(
+        {"_id": msg.from_user.id},
+        {"$inc": {"points": bonus_points}, "$set": {"last_bonus": now.isoformat()}}
+    )
+    await msg.reply(f"<b>Bonus claimed!</b> +{bonus_points} points added!", parse_mode=ParseMode.HTML)
 
 @app.on_message(filters.command("refer"))
-async def refer(_, msg):
-    uid = msg.from_user.id
-    link = f"https://t.me/{BOT_USERNAME}?start=ref{uid}" if BOT_USERNAME else f"https://t.me/{msg.chat.username}?start=ref{uid}"
-    user = await get_user_doc(uid)
-    refs = user.get("referrals", 0) if user else 0
-    await msg.reply_text(
-        "<b>📩 Invite Friends & Earn!</b>\n\n"
-        f"Your Link: <code>{link}</code>\n\n"
-        f"Referrals: <b>{refs}</b>\n"
-        f"Reward: <b>+5 points</b> per user!",
-        parse_mode=ParseMode.HTML
+async def refer(client: Client, msg):
+    bot = await client.get_me()
+    link = f"https://t.me/{bot.username}?start=ref{msg.from_user.id}"
+    await msg.reply(
+        f"<b>Your Referral Link:</b>\n{link}\n\n"
+        f"Earn <b>5 points</b> when someone joins using your link!",
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True
     )
 
 @app.on_message(filters.command("stats"))
-async def stats(_, msg):
-    global total_stats
-    uptime = datetime.now(timezone.utc) - START_TIME
-    h, rem = divmod(int(uptime.total_seconds()), 3600)
-    m, s = divmod(rem, 60)
-    total_users = len(total_users_set)
-    if users_col:
-        try:
-            total_users = await users_col.estimated_document_count()
-        except:
-            total_users = len(total_users_set)
-    await msg.reply_text(
-        f"<b>📊 Bot Statistics</b>\n\n"
-        f"👥 Total Users: <b>{total_users}</b>\n"
-        f"❓ Total Questions: <b>{total_stats}</b>\n"
-        f"🟢 Uptime: <b>{h}h {m}m {s}s</b>\n"
-        f"💬 Your Asks: <b>{user_stats[msg.from_user.id]}</b>",
+async def stats_cmd(client: Client, msg):
+    user = await get_user(msg.from_user.id)
+    global_stats = await stats.find_one({"_id": "global"}) or {"total_users": 0, "total_questions": 0}
+    
+    await msg.reply(
+        "<b>Bot Statistics</b>\n\n"
+        f"Total Users: <b>{global_stats['total_users']}</b>\n"
+        f"Total Questions: <b>{global_stats['total_questions']}</b>\n"
+        f"Uptime: <b>{format_uptime()}</b>\n"
+        f"Your Asks: <b>{user['total_questions']}</b>",
         parse_mode=ParseMode.HTML
     )
 
-@app.on_message(filters.command("restart"))
-async def restart(_, msg):
-    user_states[msg.from_user.id]["awaiting"] = False
-    await msg.reply_text("✅ Session cleared. Use /ask to start again.")
-
-# === MAIN ASK COMMAND (private only) ===
 @app.on_message(filters.command("ask") & filters.private)
-async def ask_command(client: Client, message):
-    global total_stats, gemini_model
-    uid = message.from_user.id
-    await ensure_user(uid)
-
-    ok, reason = await can_ask(uid)
-    if not ok:
-        return await message.reply_text(f"❌ {reason}", parse_mode=ParseMode.HTML)
+async def ask_command(client: Client, msg):
+    user_id = msg.from_user.id
+    user = await get_user(user_id)
+    
+    if user["points"] <= 0:
+        return await msg.reply("You have no points left!\nUse /bonus (once daily) or ask admin for points.")
 
     question = None
-    # Command text
-    if len(message.command) > 1:
-        question = " ".join(message.command[1:])
-    # Reply to message
-    elif message.reply_to_message:
-        if message.reply_to_message.text:
-            question = message.reply_to_message.text
-        elif message.reply_to_message.caption:
-            question = message.reply_to_message.caption
-        else:
-            question = "Describe this image/document."
-    # Ask interactively
+    if len(msg.command) > 1:
+        question = " ".join(msg.command[1:])
+    elif msg.reply_to_message and msg.reply_to_message.text:
+        question = msg.reply_to_message.text
+    else:
+        await msg.reply("Please send your question now...")
+        try:
+            response = await client.ask(chat_id=msg.chat.id, user_id=user_id, timeout=120)
+            question = response.text
+        except asyncio.TimeoutError:
+            return await msg.reply("Timeout. Please try /ask again.")
+
     if not question:
-        sos = await app.ask(
-            message.chat.id,
-            text=(
-                "📥 Send me your question — I'll answer it.\n\n"
-                "Send `/quit` to cancel."
-            ),
-        )
-        user_input = (sos.text or "").strip()
-        if user_input.lower() == "/quit":
-            return await message.reply_text("<b><i>❌ The process has been cancelled.</i></b>", parse_mode=ParseMode.HTML)
-        question = user_input
+        return await msg.reply("No question provided.")
 
-    if not question or len(question.strip()) < 2:
-        return await message.reply_text("❌ Please provide a valid question.")
+    await deduct_point(user_id)
+    thinking = await msg.reply("<i>Thinking...</i>", parse_mode=ParseMode.HTML)
 
-    # Deduct a point and track usage
-    await deduct_points(uid)
-    user_states[uid]["awaiting"] = False
-    user_stats[uid] += 1
-    total_stats += 1
+    try:
+        await configure_gemini()
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        response = await asyncio.to_thread(model.generate_content, question)
+        answer = response.text
+    except Exception as e:
+        return await thinking.edit_text(f"<b>Error:</b> {str(e)}", parse_mode=ParseMode.HTML)
 
-    thinking = await message.reply_text("🧠 <i>Thinking with Gemini...</i>", parse_mode=ParseMode.HTML)
+    # Clean formatting
+    header = f"<b>Question:</b>\n{question}\n\n<b>Answer:</b>\n"
+    full_text = header + answer
 
-    # Query Gemini
-    answer = await query_gemini(question)
-    # Save last answer in state & DB
-    user_states[uid]["last_answer"] = {"question": question, "answer": answer}
-    if sessions_col:
-        await sessions_col.update_one({"user_id": uid}, {"$set": {"last_answer": user_states[uid]["last_answer"]}}, upsert=True)
+    if len(full_text) > 4096:
+        parts = textwrap.wrap(full_text, 4000, replace_whitespace=False)
+        await thinking.delete()
+        for i, part in enumerate(parts):
+            await msg.reply(part if i == 0 else part, parse_mode=ParseMode.HTML)
+    else:
+        await thinking.edit_text(full_text, parse_mode=ParseMode.HTML)
 
-    header = format_header(question)
-    # chunk if long (Telegram message length guard)
-    chunks = [answer[i:i+3800] for i in range(0, len(answer), 3800)]
-    await thinking.edit_text(header + (chunks[0] if chunks else "No answer."), reply_markup=followup_keyboard(), parse_mode=ParseMode.HTML)
-    for chunk in chunks[1:]:
-        await message.reply_text(chunk, parse_mode=ParseMode.HTML)
+# === ADMIN COMMANDS ===
+@app.on_message(filters.command("admin_settings"))
+async def admin_panel(client: Client, msg):
+    if not is_owner_or_admin(msg.from_user.id):
+        return await msg.reply("Unauthorized.")
+    await msg.reply("Admin Settings", reply_markup=admin_panel_keyboard())
 
-# === CALLBACK QUERIES (followups + admin actions) ===
+@app.on_message(filters.command("restart"))
+async def restart_bot(client: Client, msg):
+    if not is_owner_or_admin(msg.from_user.id):
+        return
+    await msg.reply("Restarting bot...")
+    os.execv(__file__, ['python'] + [__file__])
+
+# === CALLBACK QUERIES ===
 @app.on_callback_query()
-async def callbacks(_, cq):
-    uid = cq.from_user.id
-    data = cq.data or ""
+async def admin_callbacks(client: Client, cq):
+    if not is_owner_or_admin(cq.from_user.id):
+        return await cq.answer("Not authorized.", show_alert=True)
 
-    # User-facing followups
-    if data == "ask_btn":
-        await cq.message.reply_text("Send your question now!")
-        await cq.answer()
-        return
+    data = cq.data
 
-    if data == "help_btn":
-        await cq.message.reply_text("Use /help for commands.")
-        await cq.answer()
-        return
+    if data == "admin_close":
+        await cq.message.delete()
+        return await cq.answer()
 
-    if data == "stats_btn":
-        await cq.message.reply_text("Use /stats for bot info.")
-        await cq.answer()
-        return
+    if data == "admin_add_points":
+        await cq.message.reply("Send: <user_id> <amount>")
+        resp = await client.ask(cq.message.chat.id, cq.from_user.id)
+        try:
+            uid, amt = map(int, resp.text.split()[:2])
+            await users.update_one({"_id": uid}, {"$inc": {"points": amt}})
+            await cq.message.reply(f"Added {amt} points to {uid}")
+        except:
+            await cq.message.reply("Invalid format.")
 
-    if data.startswith("follow_"):
-        # follow-up actions: explain, summarize, code
-        last = user_states[uid].get("last_answer")
-        if not last:
-            return await cq.answer("No previous question found.", show_alert=True)
-        action = data.split("_", 1)[1]
-        q = last["question"]
-        prev = last["answer"]
-        prompts = {
-            "explain": f"Explain in more detail about: {q}\nPrevious answer: {prev}",
-            "summarize": f"Summarize this in 3-5 bullet points:\n{prev}",
-            "code": f"Provide a clean, working Python code example for: {q}\nContext: {prev}"
-        }
-        prompt = prompts.get(action, "")
-        if not prompt:
-            return await cq.answer("Invalid action.")
-        await cq.message.reply_text("<i>Generating...</i>", parse_mode=ParseMode.HTML)
-        await cq.answer()
-        follow = await query_gemini(prompt)
-        user_states[uid]["last_answer"]["answer"] = follow
-        title = {"explain": "Detailed Explanation", "summarize": "Summary", "code": "Code Example"}
-        header = f"<b>{title.get(action, action.title())}:</b>\n<blockquote>{textwrap.shorten(q, 100)}</blockquote>\n\n"
-        chunks = [follow[i:i+3800] for i in range(0, len(follow), 3800)]
-        await cq.message.reply_text(header + (chunks[0] if chunks else "No content."), parse_mode=ParseMode.HTML)
-        for c in chunks[1:]:
-            await cq.message.reply_text(c, parse_mode=ParseMode.HTML)
-        return
+    elif data == "admin_remove_points":
+        await cq.message.reply("Send: <user_id> <amount>")
+        resp = await client.ask(cq.message.chat.id, cq.from_user.id)
+        try:
+            uid, amt = map(int, resp.text.split()[:2])
+            await users.update_one({"_id": uid}, {"$inc": {"points": -amt}})
+            await cq.message.reply(f"Removed {amt} points from {uid}")
+        except:
+            await cq.message.reply("Invalid format.")
 
-    # --- ADMIN PANEL ACTIONS ---
-    if data.startswith("admin_"):
-        if not is_admin(uid):
-            await cq.answer("Unauthorized", show_alert=True)
-            return
+    elif data == "admin_ban":
+        await cq.message.reply("Send: <user_id> [reason]")
+        resp = await client.ask(cq.message.chat.id, cq.from_user.id)
+        parts = resp.text.split(maxsplit=1)
+        uid = int(parts[0])
+        reason = parts[1] if len(parts) > 1 else "No reason"
+        await bans.update_one({"_id": uid}, {"$set": {"reason": reason, "banned_at": datetime.now(timezone.utc)}}, upsert=True)
+        await cq.message.reply(f"User {uid} banned.")
 
-        action = data.split("_", 1)[1]
+    elif data == "admin_unban":
+        await cq.message.reply("Send: <user_id>")
+        resp = await client.ask(cq.message.chat.id, cq.from_user.id)
+        uid = int(resp.text)
+        await bans.delete_one({"_id": uid})
+        await cq.message.reply(f"User {uid} unbanned.")
 
-        # Close admin panel
-        if action == "close":
-            try:
-                await cq.message.edit_text("Admin panel closed.")
-            except:
-                pass
-            await cq.answer()
-            return
+    elif data == "admin_ban_list":
+        banned = [doc async for doc in bans.find({})]
+        if not banned:
+            return await cq.message.reply("No banned users.")
+        text = "<b>Banned Users:</b>\n" + "\n".join([f"• {d['_id']} — {d.get('reason','No reason')}" for d in banned])
+        await cq.message.reply(text, parse_mode=ParseMode.HTML)
 
-        # Add points (interactive)
-        if action == "add_points":
-            await cq.answer()
-            prompt = await app.ask(uid, text="Send target user_id and amount to add (format: <user_id> <amount>)\nSend /cancel to stop.")
-            txt = (prompt.text or "").strip()
-            if txt.lower() == "/cancel":
-                return await app.send_message(uid, "Cancelled.")
-            try:
-                parts = txt.split()
-                target = int(parts[0]); amount = int(parts[1])
-                await add_points(target, amount)
-                new_points = await get_points(target)
-                await app.send_message(uid, f"✅ Added {amount} points to {target}. New balance: {new_points}")
-            except Exception as e:
-                await app.send_message(uid, f"❌ Error parsing input or updating points: {e}")
-            return
+    elif data == "admin_api_key":
+        await cq.message.reply("Send new Gemini API key:")
+        resp = await client.ask(cq.message.chat.id, cq.from_user.id)
+        new_key = resp.text.strip()
+        await api_keys.replace_one({"_id": "current"}, {"key": new_key}, upsert=True)
+        await configure_gemini()
+        await cq.message.reply("API key updated and applied!")
 
-        # Remove points (interactive)
-        if action == "remove_points":
-            await cq.answer()
-            prompt = await app.ask(uid, text="Send target user_id and amount to remove (format: <user_id> <amount>)\nSend /cancel to stop.")
-            txt = (prompt.text or "").strip()
-            if txt.lower() == "/cancel":
-                return await app.send_message(uid, "Cancelled.")
-            try:
-                parts = txt.split()
-                target = int(parts[0]); amount = int(parts[1])
-                await add_points(target, -abs(amount))
-                new_points = await get_points(target)
-                await app.send_message(uid, f"✅ Removed {amount} points from {target}. New balance: {new_points}")
-            except Exception as e:
-                await app.send_message(uid, f"❌ Error parsing input or updating points: {e}")
-            return
-
-        # Ban user (interactive)
-        if action == "ban":
-            await cq.answer()
-            prompt = await app.ask(uid, text="Send target user_id and optional reason (format: <user_id> [reason])\nSend /cancel to stop.")
-            txt = (prompt.text or "").strip()
-            if txt.lower() == "/cancel":
-                return await app.send_message(uid, "Cancelled.")
-            try:
-                parts = txt.split(None, 1)
-                target = int(parts[0]); reason = parts[1] if len(parts) > 1 else "No reason"
-                await set_ban(target, True, reason)
-                await app.send_message(uid, f"🚫 Banned user {target}\nReason: {reason}")
-            except Exception as e:
-                await app.send_message(uid, f"❌ Error parsing input or banning: {e}")
-            return
-
-        # Unban user (interactive)
-        if action == "unban":
-            await cq.answer()
-            prompt = await app.ask(uid, text="Send target user_id to unban (format: <user_id>)\nSend /cancel to stop.")
-            txt = (prompt.text or "").strip()
-            if txt.lower() == "/cancel":
-                return await app.send_message(uid, "Cancelled.")
-            try:
-                target = int(txt.split()[0])
-                await set_ban(target, False, None)
-                await app.send_message(uid, f"✅ Unbanned user {target}")
-            except Exception as e:
-                await app.send_message(uid, f"❌ Error parsing input or unbanning: {e}")
-            return
-
-        # All ban list: show small list (paginated would be better for many users)
-        if action == "ban_list":
-            await cq.answer()
-            rows = await list_all_banned()
-            if not rows:
-                return await app.send_message(uid, "No banned users found.")
-            text = "🚫 <b>Banned Users</b>\n\n"
-            for (user_id, reason) in rows[:50]:  # limit to 50 to avoid huge message
-                text += f"• <code>{user_id}</code> — {reason}\n"
-            if len(rows) > 50:
-                text += f"\n...and {len(rows)-50} more."
-            await app.send_message(uid, text, parse_mode=ParseMode.HTML)
-            return
-
-        # API Key management
-        if action == "api_key":
-            await cq.answer()
-            # Show current key masked (if any) and let admin set new one
-            key_stored = None
-            if settings_col:
-                existing = await settings_col.find_one({"name": "gemini_api_key"})
-                key_stored = existing.get("value") if existing else None
-            else:
-                key_stored = bot_settings.get("gemini_api_key")
-
-            masked = (key_stored[:4] + "..." + key_stored[-4:]) if key_stored else "<i>Not set</i>"
-            await app.send_message(uid, f"Current Gemini API Key: {masked}", parse_mode=ParseMode.HTML)
-            prompt = await app.ask(uid, text="Send new GEMINI API KEY to set, or send /view to only view, /clear to remove it. Send /cancel to stop.")
-            txt = (prompt.text or "").strip()
-            if txt.lower() == "/cancel":
-                return await app.send_message(uid, "Cancelled.")
-            if txt.lower() == "/view":
-                return await app.send_message(uid, f"Current (masked): {masked}", parse_mode=ParseMode.HTML)
-            if txt.lower() == "/clear":
-                # clear key
-                if settings_col:
-                    await settings_col.delete_one({"name": "gemini_api_key"})
-                bot_settings["gemini_api_key"] = None
-                # also unset genai client
-                global gemini_model
-                gemini_model = None
-                return await app.send_message(uid, "✅ Gemini API key cleared.")
-            # else set new key
-            new_key = txt
-            if settings_col:
-                await settings_col.update_one({"name": "gemini_api_key"}, {"$set": {"value": new_key}}, upsert=True)
-            bot_settings["gemini_api_key"] = new_key
-            # attempt to configure genai client if library present
-            if genai_available:
-                try:
-                    genai.configure(api_key=new_key)
-                    gemini_model = genai
-                    await app.send_message(uid, "✅ Gemini API key set and genai initialized.")
-                except Exception as e:
-                    gemini_model = None
-                    await app.send_message(uid, f"⚠️ Key saved but genai init failed: {e}")
-            else:
-                gemini_model = None
-                await app.send_message(uid, "✅ Gemini API key saved to settings (genai library not installed).")
-            return
-
-    # If we reach here: unknown callback
     await cq.answer()
 
-# === ADMIN SETTINGS COMMAND (shows panel) ===
-@app.on_message(filters.command("admin_settings") & filters.private)
-async def admin_settings_cmd(_, msg):
-    uid = msg.from_user.id
-    if not is_admin(uid):
-        return await msg.reply_text("🔒 You are not authorized to use this command.")
-    await msg.reply_text("<b>🔧 Admin Settings</b>\nChoose an action:", reply_markup=admin_panel_keyboard(), parse_mode=ParseMode.HTML)
-
-# === Start the bot ===
-if __name__ == "__main__":
-    print("Gemini AI Bot Starting...")
-    startup_tasks()
-    app.run()
+# === START BOT ===
+print("Gemini AI Bot Starting...")
+app.run(startup_tasks())
