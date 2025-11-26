@@ -344,7 +344,7 @@ async def banlist(_, msg):
 
 # ---------- Ask handler (fixed and DB-backed) ----------
 @app.on_message(filters.command("ask"))
-async def ask(_, msg):
+async def ask(app, msg):
     uid = msg.from_user.id
 
     # Check banned
