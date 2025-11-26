@@ -12,7 +12,7 @@ from pyrogram.types import (
 )
 from pyrogram.enums import ParseMode
 
-import google.generativeai as genai
+import google as genai
 
 # Optional async MongoDB
 try:
