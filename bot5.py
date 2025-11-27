@@ -652,9 +652,9 @@ def reset_and_set_commands():
         {"command": "start", "description": "✅ Check Alive the Bot"},
         {"command": "cancel", "description": "🚫 Stop the ongoing process"},
         {"command": "id", "description": "🆔 Get Your ID"},
-        {"command": "ask", "description": "👁️ View Bot Activity"}
-        {"command": "bonus", "description": "👁️ get free points"}
-        {"command": "balance", "description": "👁️ View your points"}
+        {"command": "ask", "description": "👁️ View Bot Activity"},
+        {"command": "bonus", "description": "👁️ get free points"},
+        {"command": "balance", "description": "👁️ View your points"},
     ]
     # Owner ke liye extra commands
     owner_commands = general_commands + [
