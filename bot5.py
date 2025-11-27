@@ -1,4 +1,4 @@
-# bot.py
+p# bot.py
 import traceback
 import asyncio
 from datetime import datetime, timedelta
@@ -339,13 +339,13 @@ async def ask_handler(app_obj, msg):
             
         # 2) replied message
         if msg.reply_to_message:
-            replied = message.reply_to_message
+            replied = msg.reply_to_message
             if getattr(msg, "text", None):
                 question = replied.text
             elif getattr(replied, "caption", None):
                 question = replied.caption
             else:
-                return await message.reply_text("⚠️ Replied message has no text/caption.")
+                return await msg.reply_text("⚠️ Replied message has no text/caption.")
 
         # 3) interactive ask
         else:
