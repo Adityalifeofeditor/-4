@@ -323,6 +323,33 @@ async def set_api_cmd(_, msg):
         await send_error_traceback(e, "set_api_cmd")
 
 # -------------------------------
+
+
+THINKING_FRAMES = [
+    "⏳ Thinking…",
+    "⌛ Thinking 🤔",
+    "⏳ Thinking 🤔🤔",
+    "⌛ Thinking 🤔🤔🤔",
+    "⏳ Thinking 🧐",
+    "⌛ Thinking 🧐🧐",
+    "⏳ Thinking 🧐🧐🧐",
+]
+
+async def animate_status(message):
+    """
+    Continuously edits the message text with animation frames.
+    Returns when cancelled.
+    """
+    try:
+        i = 0
+        while True:
+            frame = THINKING_FRAMES[i % len(THINKING_FRAMES)]
+            await message.edit_text(frame)
+            i += 1
+            await asyncio.sleep(0.7)   # speed of animation
+    except asyncio.CancelledError:
+        # Stop animation silently
+        pass
 # Main Ask handler
 # -------------------------------
 @app.on_message(filters.command("ask"))
@@ -338,7 +365,7 @@ async def ask_handler(app_obj, msg):
             question = " ".join(msg.command[1:])
             
         # 2) replied message
-        if msg.reply_to_message:
+        elif msg.reply_to_message:
             replied = msg.reply_to_message
             if getattr(msg, "text", None):
                 question = replied.text
@@ -353,8 +380,16 @@ async def ask_handler(app_obj, msg):
             question = (asked.text or "").strip()
             if not question:
                 return await msg.reply("❌ No question provided. Cancelled.")
+                
         status = await msg.reply("⏳ Thinking...")
+    
+
+#animation_task = asyncio.create_task(animate_status(status))
+
         try:
+            # Stop animation
+            animation_task.cancel()
+            
             answer = await query_gemini(question)
         except Exception as e:
             await status.edit_text(f"⚠️ Error while querying Gemini: {e}")
