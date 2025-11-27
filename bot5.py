@@ -31,6 +31,7 @@ ENV_GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 LOG_CHANNEL_ID = os.getenv("LOG_CHANNEL_ID")   # channel for tracebacks (e.g. -1001234567890)
 LOG_GROUP_ID = os.getenv("LOG_GROUP_ID")       # group for Q&A logs (e.g. -1009876543210)
 BONUS_POINTS = int(os.getenv("BONUS_POINTS", "20"))
+ASK_MIN_POINTS  = int(os.getenv("ASK_MIN_POINTS ", "1")) # set your minimum required points here
 CREATE_INDEXES = os.getenv("CREATE_INDEXES", "yes").lower() in ("1", "yes", "true", "y")
 
 # ---- basic validation ----
@@ -277,13 +278,6 @@ async def setcommands(_, msg):
     except Exception as e:
         await send_error_traceback(e, "setcommands")
 
-@app.on_message(filters.command("restart"))
-async def restart(_, msg):
-    try:
-        await msg.reply("🔄 Session restarted. Use /ask to ask a question again.")
-    except Exception as e:
-        await send_error_traceback(e, "restart")
-
 
 # Admin helper to parse target & amount (works for reply or inline)
 def _parse_target_and_amount_from_text(text, reply_msg):
@@ -359,7 +353,29 @@ async def animate_status(message):
 async def ask_handler(app_obj, msg):
     try:
         uid = msg.from_user.id
+
+        # Get user data from MongoDB
         user = get_user(uid)
+
+        if not user:
+            return await msg.reply(
+                "⚠️ You don't have an account yet.\n"
+                "Use /bonus to get free points and try again!"
+            )
+
+        points = user.get("points", 0)
+
+        # Check minimum required points
+        if points < ASK_MIN_POINTS:
+            return await msg.reply(
+                f"❌ You need at least **{ASK_MIN_POINTS} points** to use /ask.\n\n"
+                f"💡 Use /bonus to get free points.\n"
+                f"💰 Check your balance with /balance."
+            )
+
+        # ----- USER HAS ENOUGH POINTS → CONTINUE WITH ASK LOGIC -----
+
+        
         if user.get("banned"):
             return await msg.reply("🚫 You are banned from using this bot.")
             
@@ -370,13 +386,12 @@ async def ask_handler(app_obj, msg):
         # 2) replied message
 
         elif msg.reply_to_message:
-            replied = msg.reply_to_message
-            if replied.text:
-                question = replied.text
-            elif replied.caption:
-                question = replied.caption
-            else:
-                return await msg.reply("⚠️ Replied message has no text/caption.")
+
+            rep = msg.reply_to_message
+            text = (rep.text or rep.caption or "").strip()
+            if not text:
+                return await msg.reply("⚠️ Replied message has no text .")
+            question = text            
                 
         # 3) interactive ask
         else:
@@ -409,7 +424,7 @@ async def ask_handler(app_obj, msg):
             return
         # increment stats in DB
         inc_user_field(uid, "stats", 1)
-        inc_user_field(uid, "points", 1)
+        inc_user_field(uid, "points", -1)
         total = get_setting("total_questions") or 0
         set_setting("total_questions", (total or 0) + 1)
         # deliver answer (chunked)
@@ -555,6 +570,11 @@ async def stats_cmd(app, message):
         )
     except Exception as e:
         await send_error_traceback(e, "stats")
+
+@app.on_message(filters.command(["restart"]) & filters.user(OWNER_ID)))
+async def restart_handler(_, m):
+    await m.reply_text("𝐁𝐨𝐭 𝐢𝐬 𝐑𝐞𝐬𝐭𝐚𝐫𝐭𝐢𝐧𝐠...", True)
+    os.execl(sys.executable, sys.executable, *sys.argv)
 
 # -------------------------------
 # Callback query: Admin menu + API submenu
@@ -711,7 +731,7 @@ async def callback_query_handler(_, cq):
         
             # Step 5: Update stats
             inc_user_field(uid, "stats", 1)
-            inc_user_field(uid, "points", 1)
+            inc_user_field(uid, "points", -1)
             total = get_setting("total_questions") or 0
             set_setting("total_questions", total + 1)
         
@@ -782,7 +802,8 @@ def reset_and_set_commands():
         {"command": "rem_user", "description": "⏸️ Remove Authorisation "},
         {"command": "set_api", "description": "👨‍👨‍👧‍👦 ai api key"},
         {"command": "admin_settings", "description": "👁️ Admin settings"},
-        {"command": "restart", "description": "✅ Reset the Bot"}
+        {"command": "restart", "description": "✅ Reset the Bot"},
+        {"command": "stats", "description": "✅ stats of Bot"}
     ]
 
     # General users ke liye set commands (scope default)
