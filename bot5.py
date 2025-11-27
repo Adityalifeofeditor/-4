@@ -327,12 +327,21 @@ async def ask_handler(app_obj, msg):
         user = get_user(uid)
         if user.get("banned"):
             return await msg.reply("🚫 You are banned from using this bot.")
-        # 1) replied message
-        if msg.reply_to_message and getattr(msg.reply_to_message, "text", None):
-            question = msg.reply_to_message.text
-        # 2) inline: /ask question
-        elif len(msg.command) > 1:
+            
+        # 1) inline: /ask question
+        if len(msg.command) > 1:
             question = " ".join(msg.command[1:])
+            
+        # 2) replied message
+        if msg.reply_to_message:
+            replied = message.reply_to_message
+            if getattr(msg, "text", None):
+                question = replied.text
+            elif getattr(replied, "caption", None):
+                question = replied.caption
+            else:
+                return await message.reply_text("⚠️ Replied message has no text/caption.")
+
         # 3) interactive ask
         else:
             asked = await app.ask(uid, text="✍️ Send your question (or /cancel):")
@@ -561,46 +570,16 @@ async def callback_query_handler(_, cq):
     except Exception as e:
         await send_error_traceback(e, "callback_query_handler")
 
-# -------------------------------
-# Global exception handling for loop (so we can capture anything unexpected)
-# -------------------------------
-def loop_exception_handler(loop, context):
-    """
-    Called on uncaught exception in event loop.
-    context is a dict with keys "message", "exception", etc.
-    We'll try to send traceback to LOG_CHANNEL_ID.
-    """
-    try:
-        exc = context.get("exception")
-        msg = context.get("message", "No message")
-        tb_text = ""
-        if exc:
-            tb_text = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
-        else:
-            tb_text = str(context)
-        async def _send():
-            text = f"🚨 *Uncaught exception in event loop*\n{msg}\n\n```\n{tb_text[:3900]}\n```"
-            if LOG_CHANNEL_ID:
-                try:
-                    await app.send_message(int(LOG_CHANNEL_ID), text)
-                except Exception as e:
-                    print("Failed to send loop exception to LOG_CHANNEL_ID:", e)
-                    print(tb_text)
-            else:
-                print("Loop exception:", tb_text)
-        asyncio.ensure_future(_send())
-    except Exception as e:
-        print("Failed to handle loop exception:", e)
-
 
 # -------------------------------
 def notify_owner():
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     data = {
-        "chat_id": OWNER,
+        "chat_id": OWNER_ID,
         "text": "𝐁𝐨𝐭 𝐑𝐞𝐬𝐭𝐚𝐫𝐭𝐞𝐝 𝐒𝐮𝐜𝐜𝐞𝐬𝐬𝐟𝐮𝐥𝐥𝐲 ✅"
     }
     requests.post(url, data=data)
+# -------------------------------
 
 def reset_and_set_commands():
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/setMyCommands"
@@ -644,12 +623,12 @@ if __name__ == "__main__":
     try:
         notify_owner() 
     except Exception as e:
-        print("Failed to set loop exception handler:", e)
+        print("Failed notify_owner handler:", e)
+        
     try:
         reset_and_set_commands() 
     except Exception as e:
-        print("Failed to set loop exception handler:", e)
-
+        print("Failed to reset_and_set_commands handler:", e)
 
     print("🚀 Running bot...")
     app.run()
