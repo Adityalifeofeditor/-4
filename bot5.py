@@ -116,6 +116,17 @@ def set_user_field(uid: int, field: str, value):
 def list_banned(limit=500):
     return [d["_id"] for d in users_col.find({"banned": True}).limit(limit)]
 
+def set_model(user_id, model):
+    db.settings.update_one(
+        {"_id": user_id},
+        {"$set": {"ai_model": model}},
+        upsert=True
+    )
+
+def get_model(user_id):
+    data = db.settings.find_one({"_id": user_id})
+    return data.get("ai_model", "gemini-2.5-flash")  # default
+
 # -------------------------------
 # Logging helpers
 # -------------------------------
@@ -159,13 +170,14 @@ def chunk_text(text, size=3500):
     for i in range(0, len(text or ""), size):
         yield text[i:i+size]
 
+user_model = get_model(OWNER_ID)
 async def query_gemini(prompt: str):
     if gemini_client is None:
         raise RuntimeError("❌ Gemini API key not set. Use admin /admin_settings → API Key → Set API Key or /set_api.")
     loop = asyncio.get_event_loop()
     def _call():
         # synchronous network call performed in executor
-        res = gemini_client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+        res = gemini_client.models.generate_content(model=user_model, contents=prompt)
         return getattr(res, "text", None) or str(res)
     return await loop.run_in_executor(None, _call)
 
@@ -191,7 +203,8 @@ def admin_keyboard():
          InlineKeyboardButton("➖ remove points", callback_data="admin_rem_points")],
         [InlineKeyboardButton("🚫 ban user", callback_data="admin_ban"),
          InlineKeyboardButton("✅ unban user", callback_data="admin_unban")],
-        [InlineKeyboardButton("🔑 api key", callback_data="admin_api_menu")],
+        [InlineKeyboardButton("🔑 api key", callback_data="admin_api_menu"),
+         InlineKeyboardButton("🤖 ai model", callback_data="ai_model_menu")],
         [InlineKeyboardButton("◀️ back to main", callback_data="admin_back")],
     ])
 
@@ -202,6 +215,62 @@ def api_menu_keyboard():
         [InlineKeyboardButton("🗑️ remove api key", callback_data="api_remove")],
         [InlineKeyboardButton("◀️ back to admin", callback_data="admin_settings")],
     ])
+
+def ai_model_keyboard():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🌩 gemini-2.5-pro", callback_data="model_g25pro")
+        ],
+        [
+            InlineKeyboardButton("⚡ gemini-2.5-flash", callback_data="model_g25flash"),
+        ],
+        [
+            InlineKeyboardButton("🧪 gemini-2.5-flash-preview", callback_data="model_g25flashprev"),
+        ],
+        [
+            InlineKeyboardButton("💡 gemini-2.5-flash-lite", callback_data="model_g25lite"),
+        ],
+        [
+            InlineKeyboardButton("🔬 gemini-2.5-flash-lite-preview", callback_data="model_g25liteprev"),
+        ],
+        [
+            InlineKeyboardButton("⚡ gemini-2.0-flash", callback_data="model_g20flash"),
+        ],
+        [
+            InlineKeyboardButton("🌙 gemini-2.0-flash-lite", callback_data="model_g20lite"),
+        ],
+        [InlineKeyboardButton("◀️ back to admin", callback_data="admin_settings")],
+    ])
+
+@app.on_callback_query(filters.regex("^ai_model_menu$"))
+async def open_ai_model_menu(_, cq):
+    await cq.answer()
+    await cq.message.edit_text(
+        "🤖 **Choose AI Model**\n\nSelect the model you want the bot to use:",
+        reply_markup=ai_model_keyboard()
+    )
+
+@app.on_callback_query(filters.regex("^model_"))
+async def set_ai_model(_, cq):
+    await cq.answer()
+
+    model_map = {
+        "model_g25pro": "gemini-2.5-pro",
+        "model_g25flash": "gemini-2.5-flash",
+        "model_g25flashprev": "gemini-2.5-flash-preview",
+        "model_g25lite": "gemini-2.5-flash-lite",
+        "model_g25liteprev": "gemini-2.5-flash-lite-preview",
+        "model_g20flash": "gemini-2.0-flash",
+        "model_g20lite": "gemini-2.0-flash-lite",
+    }
+
+    chosen = model_map.get(cq.data)
+    set_model(cq.from_user.id, chosen)
+
+    await cq.message.edit_text(
+        f"✅ **Model Updated Successfully!**\n\nYour new model is:\n**{chosen}**",
+        reply_markup=ai_model_keyboard()
+    )
 
 # -------------------------------
 # Commands
