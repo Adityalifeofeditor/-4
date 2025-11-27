@@ -124,8 +124,12 @@ def set_model(user_id, model):
     )
 
 def get_model(user_id):
-    data = db.settings.find_one({"_id": user_id})
-    return data.get("ai_model", "gemini-2.5-flash")  # default
+    data = db.settings.find_one({"_id": user_id}) or {}
+    return data.get("ai_model", "gemini-2.5-flash")
+    
+#def get_model(user_id):
+    #data = db.settings.find_one({"_id": user_id})
+    #return data.get("ai_model", "gemini-2.5-flash")  # default
 
 # -------------------------------
 # Logging helpers
