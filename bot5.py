@@ -10,7 +10,12 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pymongo import MongoClient
 from google import genai
 import os, re, sys, json, asyncio, requests
+import time
+from datetime import datetime, timedelta
 load_dotenv()
+
+BOT_STARTED_AT = time.time()
+
 
 # -------------------------------
 # Required env vars
@@ -195,6 +200,9 @@ def api_menu_keyboard():
 # Commands
 # -------------------------------
 
+
+
+
 @app.on_message(filters.command("start"))
 async def start(_, msg):
     try:
@@ -216,6 +224,17 @@ async def start(_, msg):
     except Exception as e:
         await send_error_traceback(e, "start handler")
 
+@app.on_message(filters.command("admin_settings") & filters.user(OWNER_ID))
+async def admin_start(_, msg):
+    try:
+        await msg.reply(
+            "👋 *Welcome to Gemini Ask Bot*\n\n"
+            "Here is your admin panel",
+            reply_markup=admin_keyboard()
+        )
+    except Exception as e:
+        await send_error_traceback(e, "admin_start")
+        
 @app.on_message(filters.command("help"))
 async def help_cmd(_, msg):
     try:
@@ -242,6 +261,7 @@ async def setcommands(_, msg):
             ("ask", "Ask a question"),
             ("stats", "Your usage statistics"),
             ("bonus", "Daily bonus points"),
+            ("balance", "how many points do i have"),
             ("help", "Show help"),
         ]
         if msg.from_user.id == OWNER_ID:
@@ -261,21 +281,6 @@ async def restart(_, msg):
     except Exception as e:
         await send_error_traceback(e, "restart")
 
-@app.on_message(filters.command("stats"))
-async def stats(_, msg):
-    try:
-        uid = msg.from_user.id
-        user = get_user(uid)
-        total = get_setting("total_questions") or 0
-        text = (
-            f"*Your Stats*\n"
-            f"Questions asked: {user.get('stats',0)}\n"
-            f"Points: {user.get('points',0)}\n\n"
-            f"*Total Questions (all users):* {total}"
-        )
-        await msg.reply(text)
-    except Exception as e:
-        await send_error_traceback(e, "stats")
 
 # Admin helper to parse target & amount (works for reply or inline)
 def _parse_target_and_amount_from_text(text, reply_msg):
@@ -428,6 +433,64 @@ async def bonus_cmd(_, msg):
         await msg.reply(f"🎉 You received *{points}* points! (Daily bonus)")
     except Exception as e:
         await send_error_traceback(e, "bonus_cmd")
+        
+@app.on_message(filters.command("balance"))
+async def balance_cmd(_, message):
+    uid = message.from_user.id
+    
+    # Fetch user document
+    user = await db.users.find_one({"_id": uid})
+    
+    # If user doesn't exist, create default entry
+    if not user:
+        user = {"_id": uid, "points": 0, "stats": 0, "banned": False}
+        await db.users.insert_one(user)
+
+    points = user.get("points", 0)
+
+    await message.reply_text(
+        f"💰 **Your Balance:**\n\n"
+        f"⭐ **{points} Points**"
+    )
+
+@app.on_message(filters.command("stats"))
+async def stats_cmd(app, message):
+    try:
+
+        start_ping = time.time()
+    
+        # --- Calculate API latency (ping)
+        pong_msg = await message.reply("⏱️ Calculating ping...")
+        ping_ms = (time.time() - start_ping) * 1000
+        await pong_msg.delete()
+    
+        # --- Bot Uptime
+        now = time.time()
+        uptime_sec = int(now - BOT_STARTED_AT)
+        uptime_str = str(timedelta(seconds=uptime_sec))
+    
+        # --- Fetch user stats
+        uid = message.from_user.id
+        user = users_col.find_one({"_id": uid}) or {"points": 0, "stats": 0}
+    
+        # --- Global stats
+        total_users = users_col.count_documents({})
+        total_questions = get_setting("total_questions") or 0
+    
+        await message.reply(
+            f"📊 **Bot Statistics**\n\n"
+            f"👤 **Your Stats**\n"
+            f"• Questions Asked: `{user.get('stats', 0)}`\n"
+            f"• Points: `{user.get('points', 0)}`\n\n"
+            f"🌍 **Global Stats**\n"
+            f"• Total Users: `{total_users}`\n"
+            f"• Total Questions Asked: `{total_questions}`\n\n"
+            f"🖥️ **System**\n"
+            f"• Uptime: `{uptime_str}`\n"
+            f"• Ping: `{ping_ms:.2f} ms`"
+        )
+    except Exception as e:
+        await send_error_traceback(e, "stats")
 
 # -------------------------------
 # Callback query: Admin menu + API submenu
@@ -590,6 +653,8 @@ def reset_and_set_commands():
         {"command": "cancel", "description": "🚫 Stop the ongoing process"},
         {"command": "id", "description": "🆔 Get Your ID"},
         {"command": "ask", "description": "👁️ View Bot Activity"}
+        {"command": "bonus", "description": "👁️ get free points"}
+        {"command": "balance", "description": "👁️ View your points"}
     ]
     # Owner ke liye extra commands
     owner_commands = general_commands + [
@@ -597,7 +662,7 @@ def reset_and_set_commands():
         {"command": "broadusers", "description": "👨‍❤️‍👨 All Broadcasting Users"},
         {"command": "add_user", "description": "▶️ Add Authorisation"},
         {"command": "rem_user", "description": "⏸️ Remove Authorisation "},
-        {"command": "set_api", "description": "👨‍👨‍👧‍👦 All Premium Users"},
+        {"command": "set_api", "description": "👨‍👨‍👧‍👦 ai api key"},
         {"command": "admin_settings", "description": "👁️ Admin settings"},
         {"command": "restart", "description": "✅ Reset the Bot"}
     ]
