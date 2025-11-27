@@ -551,7 +551,7 @@ async def callback_query_handler(_, cq):
             return
         # Return to main admin + back
         if data == "admin_back":
-            await cq.message.edit_text("⚙️ *Admin Settings*", reply_markup=admin_keyboard())
+            await cq.message.edit_text("⚙️ *start menu*", reply_markup=main_keyboard())
             await cq.answer()
             return
         # Add points
