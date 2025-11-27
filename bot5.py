@@ -22,7 +22,7 @@ BOT_STARTED_AT = time.time()
 # -------------------------------
 # Required env vars
 # -------------------------------
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+AI_BOT_TOKEN = os.getenv("AI_BOT_TOKEN")
 API_ID = os.getenv("API_ID")
 API_HASH = os.getenv("API_HASH")
 OWNER_ID = os.getenv("OWNER_ID")
@@ -38,8 +38,8 @@ ASK_MIN_POINTS = int(os.getenv("ASK_MIN_POINTS ", "1")) # set your minimum requi
 CREATE_INDEXES = os.getenv("CREATE_INDEXES", "yes").lower() in ("1", "yes", "true", "y")
 
 # ---- basic validation ----
-if not BOT_TOKEN or not API_ID or not API_HASH or not OWNER_ID or not MONGO_URI:
-    raise SystemExit("❌ Missing one of required env vars: BOT_TOKEN, API_ID, API_HASH, OWNER_ID, MONGO_URI")
+if not AI_BOT_TOKEN or not API_ID or not API_HASH or not OWNER_ID or not MONGO_URI:
+    raise SystemExit("❌ Missing one of required env vars: AI_BOT_TOKEN, API_ID, API_HASH, OWNER_ID, MONGO_URI")
 
 API_ID = int(API_ID)
 OWNER_ID = int(OWNER_ID)
@@ -49,7 +49,7 @@ OWNER_ID = int(OWNER_ID)
 # -------------------------------
 app = Client(
     "ask_bot",
-    bot_token=BOT_TOKEN,
+    bot_token=AI_BOT_TOKEN,
     api_id=API_ID,
     api_hash=API_HASH,
 )
@@ -311,9 +311,32 @@ async def start(_, msg):
 
         greeting = get_greeting_ist()
 
+        uid = msg.from_user.id
+
+        # Get user data from MongoDB
+        user = get_user(uid)
+        
+        if not user:
+            welcome_points = WELCOME_POINT  # 50 points
+            inc_user_field(uid, "points", welcome_points)
+        
+            return await msg.reply(
+                f"{greeting} 👋\n"
+                f"**Welcome to AI power UPSC Bot!** 🚀\n\n"
+                "You’ve received **✨ 50 FREE welcome points! ✨**\n\n"
+                "💡 **How it works:**\n"
+                "• Each query costs **1 point**.\n"
+                "• Use your points wisely to ask high-quality questions. 🤖💬\n\n"
+                "⭐ Want more points?\n"
+                "Use **/bonus** to claim free points.\n"
+                "Check your balance anytime with **/balance**.",
+                parse_mode=ParseMode.MARKDOWN
+            )
+
+        
         await msg.reply(
             f"{greeting} 👋\n"
-            f"**Welcome to Gemini Ask Bot!** 🚀\n\n"
+            f"**Welcome to AI power UPSC Bot!** 🚀\n\n"
             "💡 **You can ask questions in 3 ways:**\n\n"
             "• `/ask upsc full form ` — **instant ask**\n"
             "• Reply to any message with `/ask` — **smart reply**\n"
@@ -929,7 +952,7 @@ async def callback_query_handler(_, cq):
 
 # -------------------------------
 def notify_owner():
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    url = f"https://api.telegram.org/bot{AI_BOT_TOKEN}/sendMessage"
     data = {
         "chat_id": OWNER_ID,
         "text": "🚀 **Bot Restarted Successfully!** ✅\n\n📊 **Status:** **Online**\n⏰ **Time:** " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -940,7 +963,7 @@ def notify_owner():
 
 
 def reset_and_set_commands():
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/setMyCommands"
+    url = f"https://api.telegram.org/bot{AI_BOT_TOKEN}/setMyCommands"
 
     # General users ke liye commands
     general_commands = [
