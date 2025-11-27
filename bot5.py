@@ -175,7 +175,10 @@ def main_keyboard():
             InlineKeyboardButton("🛠️ Admin", callback_data="admin_settings"),
             InlineKeyboardButton("📊 Stats", callback_data="stats_btn"),
         ],
-        [InlineKeyboardButton("⭐ Bonus (daily)", callback_data="bonus_btn")],
+        [
+            InlineKeyboardButton("⭐ Bonus (daily)", callback_data="bonus_btn"),
+            InlineKeyboardButton("⚖️ Balance", callback_data="balance_btn"),
+        ],
     ])
 
 def admin_keyboard():
@@ -365,15 +368,16 @@ async def ask_handler(app_obj, msg):
             question = " ".join(msg.command[1:])
             
         # 2) replied message
+
         elif msg.reply_to_message:
             replied = msg.reply_to_message
-            if getattr(msg, "text", None):
+            if replied.text:
                 question = replied.text
-            elif getattr(replied, "caption", None):
+            elif replied.caption:
                 question = replied.caption
             else:
-                return await msg.reply_text("⚠️ Replied message has no text/caption.")
-
+                return await msg.reply("⚠️ Replied message has no text/caption.")
+                
         # 3) interactive ask
         else:
             asked = await app.ask(uid, text="✍️ Send your question (or /cancel):")
@@ -390,11 +394,13 @@ async def ask_handler(app_obj, msg):
             
         try:
             # Stop animation
-
             try:
-                animation_task.cancel()
-            except Exception as e:
-                await send_error_traceback(e, "query_gemini in ask_handler")
+                answer = await query_gemini(question)
+            finally:            
+                try:
+                    animation_task.cancel()
+                except Exception as e:
+                    await send_error_traceback(e, "query_gemini in ask_handler")
                     
             answer = await query_gemini(question)
         except Exception as e:
@@ -452,9 +458,11 @@ async def see_cmd(app_obj, message):
 async def bonus_cmd(_, msg):
     try:
         uid = msg.from_user.id
-        user = get_user(uid)
+        user = get_user(uid)  # pymongo user getter
+
         last = user.get("last_bonus")
         now = datetime.utcnow()
+
         if last:
             try:
                 last_dt = datetime.fromisoformat(last)
@@ -462,37 +470,52 @@ async def bonus_cmd(_, msg):
                 last_dt = None
         else:
             last_dt = None
+
         if last_dt and (now - last_dt) < timedelta(hours=24):
             remaining = timedelta(hours=24) - (now - last_dt)
             hours = remaining.seconds // 3600
             minutes = (remaining.seconds % 3600) // 60
-            return await msg.reply(f"⏳ You've already taken the daily bonus. Come back in {hours}h {minutes}m.")
-        # grant bonus
+            return await msg.reply(
+                f"⏳ You've already claimed your daily bonus.\n"
+                f"Come back in **{hours}h {minutes}m**."
+            )
+
+        # -------- GIVE BONUS POINTS -------- #
         points = BONUS_POINTS
-        inc_user_field(uid, "points", points)
+        inc_user_field(uid, "points", points)  # add points
         set_user_field(uid, "last_bonus", now.isoformat())
-        await msg.reply(f"🎉 You received *{points}* points! (Daily bonus)")
+
+        await msg.reply(
+            f"🎉 You received **{points} points**!\n"
+            f"💰 Use /balance to check your total."
+        )
+
     except Exception as e:
         await send_error_traceback(e, "bonus_cmd")
         
 @app.on_message(filters.command("balance"))
 async def balance_cmd(_, message):
-    uid = message.from_user.id
-    
-    # Fetch user document
-    user = await db.users.find_one({"_id": uid})
-    
-    # If user doesn't exist, create default entry
-    if not user:
-        user = {"_id": uid, "points": 0, "stats": 0, "banned": False}
-        await db.users.insert_one(user)
+    try:
+        uid = message.from_user.id
 
-    points = user.get("points", 0)
+        # Fetch user document via your helper
+        user = get_user(uid)
 
-    await message.reply_text(
-        f"💰 **Your Balance:**\n\n"
-        f"⭐ **{points} Points**"
-    )
+        # If user does not exist → create default
+        if not user:
+            user = {"_id": uid, "points": 0, "stats": 0, "banned": False}
+            db.users.insert_one(user)
+
+        points = user.get("points", 0)
+
+        await message.reply_text(
+            f"💰 **Your Balance:**\n\n"
+            f"⭐ **{points} Points**"
+        )
+
+    except Exception as e:
+        await send_error_traceback(e, "balance_cmd")
+
 
 @app.on_message(filters.command("stats"))
 async def stats_cmd(app, message):
@@ -654,11 +677,60 @@ async def callback_query_handler(_, cq):
                 pass
             await app.send_message(uid, "🗑️ Gemini API key removed.")
             return await cq.answer()
-        # Ask button from main keyboard
+        # Ask button from main keyboard        
         if data == "ask_btn":
             await cq.answer()
-            await cq.message.reply("✍️ Send `/ask` to ask a question (or reply to a message with `/ask`).")
+            uid = cq.from_user.id
+        
+            # Step 1: Ask the user
+            asked = await app.ask(
+                uid,
+                text="✍️ Send your question (or /cancel):"
+            )
+        
+            question = (asked.text or "").strip()
+            if not question:
+                return await asked.reply("❌ No question provided. Cancelled.")
+        
+            # Step 2: Send thinking message
+            status = await asked.reply("⏳ Thinking...")
+        
+            # Step 3: Start animation
+            animation_task = asyncio.create_task(animate_status(status))
+        
+            # Step 4: Query Gemini safely
+            try:
+                answer = await query_gemini(question)
+            except Exception as e:
+                animation_task.cancel()
+                await status.edit_text(f"⚠️ Error while querying Gemini: {e}")
+                await send_error_traceback(e, "query_gemini in ask_btn")
+                return
+            finally:
+                animation_task.cancel()
+        
+            # Step 5: Update stats
+            inc_user_field(uid, "stats", 1)
+            inc_user_field(uid, "points", 1)
+            total = get_setting("total_questions") or 0
+            set_setting("total_questions", total + 1)
+        
+            # Step 6: Send final answer
+            await status.edit_text(f"*Question:*\n{question}\n\n*Answer:*")
+            for chunk in chunk_text(answer):
+                await app.send_message(cq.message.chat.id, chunk)
+        
+            # Step 7: Log Q&A
+            try:
+                set_user_field(uid, "username", cq.from_user.username or "")
+                set_user_field(uid, "name", cq.from_user.first_name or "")
+                await log_qa(get_user(uid), question, answer)
+            except Exception as e:
+                await send_error_traceback(e, "log_qa")
+        
             return
+
+        
         # Stats button
         if data == "stats_btn":
             u = get_user(uid)
@@ -669,6 +741,11 @@ async def callback_query_handler(_, cq):
         if data == "bonus_btn":
             await cq.answer()
             return await bonus_cmd(None, cq.message)  # reuse bonus logic
+        # fallback
+        await cq.answer()
+        if data == "balance_btn":
+            await cq.answer()
+            return await balance_cmd(None, cq.message)  # reuse bonus logic
         # fallback
         await cq.answer()
     except Exception as e:
