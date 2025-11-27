@@ -1,4 +1,4 @@
-p# bot.py
+
 import traceback
 import asyncio
 from datetime import datetime, timedelta
