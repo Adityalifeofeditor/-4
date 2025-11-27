@@ -592,15 +592,6 @@ def loop_exception_handler(loop, context):
     except Exception as e:
         print("Failed to handle loop exception:", e)
 
-# set event loop exception handler when starting
-@app.on_connect()
-async def on_connect(_, __):
-    try:
-        loop = asyncio.get_event_loop()
-        loop.set_exception_handler(loop_exception_handler)
-        print("Event loop exception handler set.")
-    except Exception as e:
-        print("Failed to set loop exception handler:", e)
 
 # -------------------------------
 def notify_owner():
