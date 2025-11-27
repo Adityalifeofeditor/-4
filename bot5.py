@@ -32,6 +32,7 @@ MONGO_URI = os.getenv("MONGO_URI")
 ENV_GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 LOG_CHANNEL_ID = os.getenv("LOG_CHANNEL_ID") # channel for tracebacks (e.g. -1001234567890)
 LOG_GROUP_ID = os.getenv("LOG_GROUP_ID") # group for Q&A logs (e.g. -1009876543210)
+WELCOME_POINT = int(os.getenv("WELCOME_POINT", "50"))
 BONUS_POINTS = int(os.getenv("BONUS_POINTS", "20"))
 ASK_MIN_POINTS = int(os.getenv("ASK_MIN_POINTS ", "1")) # set your minimum required points here
 CREATE_INDEXES = os.getenv("CREATE_INDEXES", "yes").lower() in ("1", "yes", "true", "y")
@@ -460,14 +461,23 @@ async def ask_handler(app_obj, msg):
 
         # Get user data from MongoDB
         user = get_user(uid)
-
+        
         if not user:
-            return await msg.reply(
-                "⚠️ **Account not found!** 😕\n\n"
-                "💡 **Use `/bonus` to create account and get free points!** ⭐",
+            welcome_points = WELCOME_POINT  # 50 points
+            inc_user_field(uid, "points", welcome_points)
+        
+            await msg.reply(
+                "🎉 **Welcome to the bot!**\n"
+                "You’ve received **✨ 50 FREE welcome points! ✨**\n\n"
+                "💡 **How it works:**\n"
+                "• Each query costs **1 point**.\n"
+                "• Use your points wisely to ask high-quality questions. 🤖💬\n\n"
+                "⭐ Want more points?\n"
+                "Use **/bonus** to claim free points.\n"
+                "Check your balance anytime with **/balance**.",
                 parse_mode=ParseMode.MARKDOWN
             )
-
+        
         points = user.get("points", 0)
 
         # Check minimum required points
@@ -494,7 +504,35 @@ async def ask_handler(app_obj, msg):
         # 2) replied message
         elif msg.reply_to_message:
             rep = msg.reply_to_message
-            text = (rep.text or rep.caption or "").strip()
+            if rep.poll:
+                poll = rep.poll
+        
+                question = poll.question
+                options = [opt.text for opt in poll.options]
+        
+                correct_answer = None
+                if poll.type == "quiz":
+                    try:
+                        correct_answer = options[poll.correct_option_id]
+                    except:
+                        correct_answer = "Not specified"
+        
+                # Build prompt for AI
+                text = f"""
+You have to solve a quiz.
+        
+Question:{question}
+        
+Options:
+{chr(10).join([f"{i+1}. {opt}" for i,opt in enumerate(options)])}
+        
+Correct Answer Provided:{correct_answer}
+        
+Now explain the answer in simple words and give the final result.
+"""
+            else:
+                text = (rep.text or rep.caption or "").strip()
+            
             if not text:
                 return await msg.reply("⚠️ **Replied message has no text!** 📝\n\n**Please reply to a message with text or caption.**", parse_mode=ParseMode.MARKDOWN)
             question = text
