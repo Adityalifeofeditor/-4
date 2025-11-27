@@ -347,9 +347,9 @@ async def animate_status(message):
             await message.edit_text(frame)
             i += 1
             await asyncio.sleep(0.7)   # speed of animation
-    except asyncio.CancelledError:
-        # Stop animation silently
-        pass
+    except Exception as e:
+        await send_error_traceback(e, "query_gemini in ask_handler")
+
 # Main Ask handler
 # -------------------------------
 @app.on_message(filters.command("ask"))
@@ -382,14 +382,20 @@ async def ask_handler(app_obj, msg):
                 return await msg.reply("❌ No question provided. Cancelled.")
                 
         status = await msg.reply("⏳ Thinking...")
-    
-
-#animation_task = asyncio.create_task(animate_status(status))
-
+        
+        try:
+            animation_task = asyncio.create_task(animate_status(status))
+        except Exception as e:
+            await send_error_traceback(e, "query_gemini in ask_handler")
+            
         try:
             # Stop animation
-            animation_task.cancel()
-            
+
+            try:
+                animation_task.cancel()
+            except Exception as e:
+                await send_error_traceback(e, "query_gemini in ask_handler")
+                    
             answer = await query_gemini(question)
         except Exception as e:
             await status.edit_text(f"⚠️ Error while querying Gemini: {e}")
