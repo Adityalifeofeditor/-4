@@ -57,7 +57,7 @@ app = Client(
 # MongoDB (PyMongo sync)
 # -------------------------------
 mongo = MongoClient(MONGO_URI)
-db = mongo.get_database("ask_bot") # default DB name; change if you like
+db = mongo.get_database("ai_ask_bot") # default DB name; change if you like
 users_col = db["users"]
 settings_col = db["settings"]
 
