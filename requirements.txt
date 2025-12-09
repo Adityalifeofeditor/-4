@@ -16,3 +16,6 @@ motor
 pyrofork
 pymongo
 pytz
+
+
+yt-dlp
