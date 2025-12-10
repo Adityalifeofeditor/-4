@@ -21,3 +21,15 @@ pytz
 yt-dlp
 python-telegram-bot
 uvicorn
+# Telegram bot
+python-telegram-bot
+
+# HTTP requests
+requests
+
+# Backend server
+fastapi
+uvicorn
+
+# Optional (for running on Render / production logging)
+python-multipart
