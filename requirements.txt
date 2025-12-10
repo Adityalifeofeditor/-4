@@ -19,3 +19,4 @@ pytz
 
 
 yt-dlp
+python-telegram-bot
