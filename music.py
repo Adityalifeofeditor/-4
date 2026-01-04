@@ -58,6 +58,16 @@ async def compress_audio(input_file: str, output_file: str):
     )
     await process.communicate()
 
+@app.on_message(filters.command("start") & filters.private)
+async def start_cmd(client: Client, message: Message):
+    user = message.from_user
+
+    await message.reply(
+        "👋 **Welcome!**\n\n"
+        "📥 Send me an **MP3 file as document**\n"
+        "🎧 I will convert it into **Telegram Music** with duration\n"
+        "🗜️ File size will be compressed automatically"
+    )
 
 @app.on_message(filters.document & filters.private)
 async def mp3_to_music(client: Client, message: Message):
