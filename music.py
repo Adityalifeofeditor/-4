@@ -6,10 +6,12 @@ from pyrogram import Client, filters
 from pyrogram.types import Message
 from hachoir.metadata import extractMetadata
 from hachoir.parser import createParser
+import requests,json
 
 API_ID = 27169529
 API_HASH = "5d67602a4e0bbfabe669c0febeaf63b6"
 BOT_TOKEN = "8574806355:AAGOXL5nDpzMvaEdhBAR_4vw3N2NXDABuJs"
+OWNER = 6441347235
 
 app = Client(
     "mp3_to_music",
@@ -96,4 +98,20 @@ async def mp3_to_music(client: Client, message: Message):
         pass
 
 
+
+
+def notify_owner():
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    data = {
+        "chat_id": OWNER,
+        "text": "𝐁𝐨𝐭 𝐑𝐞𝐬𝐭𝐚𝐫𝐭𝐞𝐝 𝐒𝐮𝐜𝐜𝐞𝐬𝐬𝐟𝐮𝐥𝐥𝐲 ✅"
+    }
+    try:
+        requests.post(url, data=data, timeout=10)
+    except Exception as e:
+        print(f"Notify owner failed: {e}")
+
+if __name__ == "__main__":
+    notify_owner() 
+    
 app.run()
