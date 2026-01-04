@@ -23,6 +23,16 @@ app = Client(
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
+@app.on_message(filters.command("start") & filters.private)
+async def start_cmd(client: Client, message: Message):
+    user = message.from_user
+
+    await message.reply(
+        "👋 **Welcome!**\n\n"
+        "📥 Send me an **MP3 file as document**\n"
+        "🎧 I will convert it into **Telegram Music** with duration\n"
+        "🗜️ File size will be compressed automatically"
+    )
 
 def get_audio_duration(file_path: str) -> int:
     """Extract duration in seconds"""
