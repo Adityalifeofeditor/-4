@@ -36,3 +36,4 @@ uvicorn
 python-multipart
 
 hachoir
+motor
