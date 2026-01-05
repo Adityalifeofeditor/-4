@@ -28,4 +28,4 @@ while True:
         #print("An error occurred:", e)
     except Exception as err:
         print(f"An error occurred: {str(err)}")
-    time.sleep(30)  # Wait for 15 seconds before the next request
+    time.sleep(600)  # Wait for 10 min 0 seconds before the next request
