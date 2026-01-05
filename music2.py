@@ -400,10 +400,10 @@ async def resume_tasks():
 
 async def main():
     await app.start()
-    notify_owner()
     await resume_tasks()
     logger.info("Bot started & resumed")
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    notify_owner()
+    asyncio.get_event_loop().run_until_complete(main())
