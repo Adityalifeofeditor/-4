@@ -12,7 +12,14 @@ import sys
 import platform
 import pyrogram
 import psutil
+import logging
 
+logging.basicConfig(
+    level=logging.INFO,
+    format='{"time": "%(asctime)s", "level": "%(levelname)s", "message": "%(message)s"}',
+    handlers=[logging.StreamHandler()]
+)
+logger = logging.getLogger("MP3Bot")
 # ================= CONFIG =================
 API_ID = int(os.getenv("API_ID", 27169529))
 API_HASH = os.getenv("API_HASH", "5d67602a4e0bbfabe669c0febeaf63b6")
