@@ -13,6 +13,8 @@ import platform
 import pyrogram
 import psutil
 import logging
+import json
+import requests
 
 logging.basicConfig(
     level=logging.INFO,
