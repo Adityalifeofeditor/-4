@@ -8,6 +8,7 @@ import platform
 import psutil
 import requests
 import shutil
+import sys
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 from enum import Enum
@@ -74,6 +75,40 @@ try:
 except Exception as e:
     logger.error(f"❌ MongoDB connection failed: {e}")
     exit(1)
+
+# ================= UTILITY FUNCTIONS =================
+async def ask_user(chat_id: int, text: str, timeout: int = 300) -> Optional[Message]:
+    """Ask user for input and wait for response"""
+    try:
+        await app.send_message(chat_id, text)
+        response = await app.listen(chat_id, filters.text, timeout=timeout)
+        return response
+    except asyncio.TimeoutError:
+        await app.send_message(chat_id, "⏰ Request timed out. Please try again.")
+        return None
+    except Exception as e:
+        logger.error(f"Ask user error: {e}")
+        return None
+
+async def delete_thumbnail(user_id: int):
+    """Delete user's thumbnail"""
+    await settings_col.update_one(
+        {"user_id": user_id},
+        {"$set": {"thumb_url": "", "updated_at": datetime.now()}}
+    )
+
+async def view_thumbnail(user_id: int, chat_id: int):
+    """View user's thumbnail"""
+    settings = await get_user_settings(user_id)
+    thumb_url = settings.get("thumb_url", "")
+    
+    if thumb_url:
+        try:
+            await app.send_photo(chat_id, thumb_url, caption="🖼 **Your Current Thumbnail**")
+        except Exception as e:
+            await app.send_message(chat_id, f"❌ Failed to load thumbnail: {e}")
+    else:
+        await app.send_message(chat_id, "😜 You haven't set any thumbnail.")
 
 # ================= INITIALIZE DATABASE =================
 async def initialize_db():
@@ -956,16 +991,18 @@ async def settings_callback_handler(_, query: CallbackQuery):
                 "**Examples:**\n"
                 "• `https://example.com/image.jpg`\n"
                 "• `https://i.imgur.com/xyz123.jpg`\n\n"
-                "Click **Add** to set a new thumbnail or **Remove** to clear."
+                "Click the buttons below to manage your thumbnail."
             )
             
             keyboard = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("➕ Add", callback_data="add_thumb"),
-                    InlineKeyboardButton("👁 View", callback_data="view_thumb"),
-                    InlineKeyboardButton("🗑 Remove", callback_data="remove_thumb")
+                    InlineKeyboardButton("➕ Add Thumbnail", callback_data="add_thumbnail"),
+                    InlineKeyboardButton("👁 View Thumbnail", callback_data="view_thumbnail")
                 ],
-                [InlineKeyboardButton("🔙 Back", callback_data="setting_back")]
+                [
+                    InlineKeyboardButton("🗑 Remove Thumbnail", callback_data="remove_thumbnail"),
+                    InlineKeyboardButton("🔙 Back", callback_data="setting_back")
+                ]
             ])
             
             await query.message.edit(text, reply_markup=keyboard)
@@ -985,14 +1022,13 @@ async def settings_callback_handler(_, query: CallbackQuery):
                 "• `MyAudio_{original}`\n"
                 "• `{original}_converted`\n"
                 "• `Custom_Name.mp3`\n\n"
-                "Click **Add** to set a new format or **Remove** to reset."
+                "Click **Set Format** to add a new format."
             )
             
             keyboard = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("➕ Add", callback_data="add_rename"),
-                    InlineKeyboardButton("👁 View", callback_data="view_rename"),
-                    InlineKeyboardButton("🗑 Remove", callback_data="remove_rename")
+                    InlineKeyboardButton("📝 Set Format", callback_data="add_rename_format"),
+                    InlineKeyboardButton("🔄 Reset Format", callback_data="reset_rename_format")
                 ],
                 [InlineKeyboardButton("🔙 Back", callback_data="setting_back")]
             ])
@@ -1013,14 +1049,13 @@ async def settings_callback_handler(_, query: CallbackQuery):
                 "• Text to remove: `[Official]`\n"
                 "• Before: `[Official] Song Name.mp3`\n"
                 "• After: `Song Name.mp3`\n\n"
-                "Click **Add** to set text to remove or **Remove** to clear."
+                "Click **Set Text** to add text to remove."
             )
             
             keyboard = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("➕ Add", callback_data="add_remove_text"),
-                    InlineKeyboardButton("👁 View", callback_data="view_remove_text"),
-                    InlineKeyboardButton("🗑 Remove", callback_data="remove_remove_text")
+                    InlineKeyboardButton("🗑 Set Text", callback_data="add_remove_text_format"),
+                    InlineKeyboardButton("🔄 Clear Text", callback_data="clear_remove_text")
                 ],
                 [InlineKeyboardButton("🔙 Back", callback_data="setting_back")]
             ])
@@ -1042,14 +1077,13 @@ async def settings_callback_handler(_, query: CallbackQuery):
                 "• Replace: `old` with `new`\n"
                 "• Before: `old_song.mp3`\n"
                 "• After: `new_song.mp3`\n\n"
-                "Click **Add** to set replacement rules or **Remove** to clear."
+                "Click **Set Replacement** to add replacement rules."
             )
             
             keyboard = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("➕ Add", callback_data="add_replace_text"),
-                    InlineKeyboardButton("👁 View", callback_data="view_replace_text"),
-                    InlineKeyboardButton("🗑 Remove", callback_data="remove_replace_text")
+                    InlineKeyboardButton("🔄 Set Replacement", callback_data="add_replace_text_format"),
+                    InlineKeyboardButton("🔄 Clear Replacement", callback_data="clear_replace_text")
                 ],
                 [InlineKeyboardButton("🔙 Back", callback_data="setting_back")]
             ])
@@ -1076,8 +1110,12 @@ async def settings_callback_handler(_, query: CallbackQuery):
             
             keyboard = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("🔤 Prefix", callback_data="setting_prefix"),
-                    InlineKeyboardButton("🔣 Suffix", callback_data="setting_suffix")
+                    InlineKeyboardButton("🔤 Set Prefix", callback_data="set_prefix_format"),
+                    InlineKeyboardButton("🔣 Set Suffix", callback_data="set_suffix_format")
+                ],
+                [
+                    InlineKeyboardButton("🔄 Clear Prefix", callback_data="clear_prefix"),
+                    InlineKeyboardButton("🔄 Clear Suffix", callback_data="clear_suffix")
                 ],
                 [InlineKeyboardButton("🔙 Back", callback_data="setting_back")]
             ])
@@ -1104,8 +1142,12 @@ async def settings_callback_handler(_, query: CallbackQuery):
             
             keyboard = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("📄 Header", callback_data="setting_header"),
-                    InlineKeyboardButton("📑 Footer", callback_data="setting_footer")
+                    InlineKeyboardButton("📄 Set Header", callback_data="set_header_format"),
+                    InlineKeyboardButton("📑 Set Footer", callback_data="set_footer_format")
+                ],
+                [
+                    InlineKeyboardButton("🔄 Clear Header", callback_data="clear_header"),
+                    InlineKeyboardButton("🔄 Clear Footer", callback_data="clear_footer")
                 ],
                 [InlineKeyboardButton("🔙 Back", callback_data="setting_back")]
             ])
@@ -1183,35 +1225,47 @@ async def settings_callback_handler(_, query: CallbackQuery):
             await query.answer(f"Upload type set to {upload_type}!")
             await setting_upload_type(_, query)
             
-        elif data == "add_thumb":
-            USER_STATES[user_id] = {"action": "set_thumb"}
-            await query.message.edit(
+        # ================= THUMBNAIL MANAGEMENT =================
+        elif data == "add_thumbnail":
+            await query.message.delete()
+            response = await ask_user(
+                query.message.chat.id,
                 "🖼 **Set Thumbnail URL**\n\n"
                 "Please send me a direct image URL (JPG/PNG):\n\n"
                 "**Example:**\n"
-                "`https://example.com/image.jpg`\n\n"
-                "Click ❌ Cancel to go back.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("❌ Cancel", callback_data="setting_thumb")]
-                ])
+                "`https://example.com/image.jpg`\n"
+                "`https://i.imgur.com/xyz123.jpg`\n\n"
+                "⚠️ **Note:** URL must be direct link to image file."
             )
             
-        elif data == "view_thumb":
-            settings = await get_user_settings(user_id)
-            thumb_url = settings.get("thumb_url", "")
-            if thumb_url:
-                await query.answer(f"Thumbnail URL: {thumb_url}", show_alert=True)
-            else:
-                await query.answer("No thumbnail set!", show_alert=True)
+            if response:
+                thumb_url = response.text.strip()
+                # Basic URL validation
+                if not (thumb_url.startswith("http://") or thumb_url.startswith("https://")):
+                    await app.send_message(query.message.chat.id, "❌ Invalid URL! Please send a valid HTTP/HTTPS URL.")
+                    return
                 
-        elif data == "remove_thumb":
-            await update_user_settings(user_id, {"thumb_url": ""})
-            await query.answer("Thumbnail removed!")
-            await setting_thumb(_, query)
+                await update_user_settings(user_id, {"thumb_url": thumb_url})
+                await app.send_message(query.message.chat.id, f"✅ Thumbnail URL set to:\n`{thumb_url}`")
+                
+        elif data == "view_thumbnail":
+            await view_thumbnail(user_id, query.message.chat.id)
+            await query.answer()
             
-        elif data == "add_rename":
-            USER_STATES[user_id] = {"action": "set_rename"}
-            await query.message.edit(
+        elif data == "remove_thumbnail":
+            settings = await get_user_settings(user_id)
+            if settings.get("thumb_url"):
+                await delete_thumbnail(user_id)
+                await query.answer("✅ Your thumbnail has been successfully deleted.", show_alert=True)
+                await setting_thumb(_, query)
+            else:
+                await query.answer("😜 You haven't set any thumbnail.", show_alert=True)
+                
+        # ================= RENAME FORMAT =================
+        elif data == "add_rename_format":
+            await query.message.delete()
+            response = await ask_user(
+                query.message.chat.id,
                 "📝 **Set Rename Format**\n\n"
                 "Please send me the new rename format:\n\n"
                 "**Variables:**\n"
@@ -1220,52 +1274,47 @@ async def settings_callback_handler(_, query: CallbackQuery):
                 "• `MyAudio_{original}`\n"
                 "• `{original}_converted`\n"
                 "• `Custom_Name.mp3`\n\n"
-                "Click ❌ Cancel to go back.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("❌ Cancel", callback_data="setting_rename")]
-                ])
+                "**Note:** Don't forget to include file extension!"
             )
             
-        elif data == "view_rename":
-            settings = await get_user_settings(user_id)
-            rename_format = settings.get("rename_format", "{original}")
-            await query.answer(f"Rename format: {rename_format}", show_alert=True)
-            
-        elif data == "remove_rename":
+            if response:
+                rename_format = response.text.strip()
+                await update_user_settings(user_id, {"rename_format": rename_format})
+                await app.send_message(query.message.chat.id, f"✅ Rename format set to:\n`{rename_format}`")
+                
+        elif data == "reset_rename_format":
             await update_user_settings(user_id, {"rename_format": "{original}"})
-            await query.answer("Rename format reset!")
+            await query.answer("✅ Rename format reset to default!")
             await setting_rename(_, query)
             
-        elif data == "add_remove_text":
-            USER_STATES[user_id] = {"action": "set_remove_text"}
-            await query.message.edit(
+        # ================= REMOVE TEXT =================
+        elif data == "add_remove_text_format":
+            await query.message.delete()
+            response = await ask_user(
+                query.message.chat.id,
                 "🗑 **Set Text to Remove**\n\n"
                 "Please send me the text to remove from filenames:\n\n"
                 "**Example:**\n"
                 "• Text: `[Official]`\n"
                 "• Result: `[Official] Song.mp3` → `Song.mp3`\n\n"
-                "Click ❌ Cancel to go back.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("❌ Cancel", callback_data="setting_remove_text")]
-                ])
+                "**Note:** This text will be removed from both filename and caption."
             )
             
-        elif data == "view_remove_text":
-            settings = await get_user_settings(user_id)
-            remove_text = settings.get("remove_text", "")
-            if remove_text:
-                await query.answer(f"Text to remove: {remove_text}", show_alert=True)
-            else:
-                await query.answer("No text to remove!", show_alert=True)
+            if response:
+                remove_text = response.text.strip()
+                await update_user_settings(user_id, {"remove_text": remove_text})
+                await app.send_message(query.message.chat.id, f"✅ Text to remove set to:\n`{remove_text}`")
                 
-        elif data == "remove_remove_text":
+        elif data == "clear_remove_text":
             await update_user_settings(user_id, {"remove_text": ""})
-            await query.answer("Remove text cleared!")
+            await query.answer("✅ Remove text cleared!")
             await setting_remove_text(_, query)
             
-        elif data == "add_replace_text":
-            USER_STATES[user_id] = {"action": "set_replace_text"}
-            await query.message.edit(
+        # ================= REPLACE TEXT =================
+        elif data == "add_replace_text_format":
+            await query.message.delete()
+            response = await ask_user(
+                query.message.chat.id,
                 "🔄 **Set Text Replacement**\n\n"
                 "Please send me the text to replace and the replacement text,\n"
                 "separated by a comma:\n\n"
@@ -1273,81 +1322,116 @@ async def settings_callback_handler(_, query: CallbackQuery):
                 "**Example:**\n"
                 "`old, new`\n"
                 "Result: `old_song.mp3` → `new_song.mp3`\n\n"
-                "Click ❌ Cancel to go back.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("❌ Cancel", callback_data="setting_replace_text")]
-                ])
+                "**Note:** Leave new_text empty to just remove the text."
             )
             
-        elif data == "view_replace_text":
-            settings = await get_user_settings(user_id)
-            replace_text = settings.get("replace_text", "")
-            replace_with = settings.get("replace_with", "")
-            if replace_text:
-                await query.answer(f"Replace: {replace_text} → {replace_with}", show_alert=True)
-            else:
-                await query.answer("No replacement set!", show_alert=True)
+            if response:
+                text = response.text.strip()
+                if "," not in text:
+                    await app.send_message(query.message.chat.id, "❌ Invalid format! Please use: `old_text, new_text`")
+                    return
                 
-        elif data == "remove_replace_text":
+                replace_text, replace_with = [t.strip() for t in text.split(",", 1)]
+                await update_user_settings(user_id, {
+                    "replace_text": replace_text,
+                    "replace_with": replace_with
+                })
+                await app.send_message(query.message.chat.id, f"✅ Replacement set:\n`{replace_text}` → `{replace_with}`")
+                
+        elif data == "clear_replace_text":
             await update_user_settings(user_id, {"replace_text": "", "replace_with": ""})
-            await query.answer("Replacement cleared!")
+            await query.answer("✅ Replacement cleared!")
             await setting_replace_text(_, query)
             
-        elif data == "setting_prefix":
-            USER_STATES[user_id] = {"action": "set_prefix"}
-            await query.message.edit(
+        # ================= PREFIX/SUFFIX =================
+        elif data == "set_prefix_format":
+            await query.message.delete()
+            response = await ask_user(
+                query.message.chat.id,
                 "🔤 **Set Prefix**\n\n"
                 "Please send me the prefix text to add to filenames:\n\n"
                 "**Example:**\n"
                 "• Prefix: `PRE_`\n"
                 "• Result: `PRE_filename.mp3`\n\n"
-                "Click ❌ Cancel to go back.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("❌ Cancel", callback_data="setting_prefix_suffix")]
-                ])
+                "**Note:** This will be added to the beginning of the filename."
             )
             
-        elif data == "setting_suffix":
-            USER_STATES[user_id] = {"action": "set_suffix"}
-            await query.message.edit(
+            if response:
+                prefix = response.text.strip()
+                await update_user_settings(user_id, {"prefix": prefix})
+                await app.send_message(query.message.chat.id, f"✅ Prefix set to:\n`{prefix}`")
+                
+        elif data == "set_suffix_format":
+            await query.message.delete()
+            response = await ask_user(
+                query.message.chat.id,
                 "🔣 **Set Suffix**\n\n"
                 "Please send me the suffix text to add to filenames:\n\n"
                 "**Example:**\n"
                 "• Suffix: `_SUF`\n"
                 "• Result: `filename_SUF.mp3`\n\n"
-                "Click ❌ Cancel to go back.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("❌ Cancel", callback_data="setting_prefix_suffix")]
-                ])
+                "**Note:** This will be added to the end of the filename (before extension)."
             )
             
-        elif data == "setting_header":
-            USER_STATES[user_id] = {"action": "set_header"}
-            await query.message.edit(
+            if response:
+                suffix = response.text.strip()
+                await update_user_settings(user_id, {"suffix": suffix})
+                await app.send_message(query.message.chat.id, f"✅ Suffix set to:\n`{suffix}`")
+                
+        elif data == "clear_prefix":
+            await update_user_settings(user_id, {"prefix": ""})
+            await query.answer("✅ Prefix cleared!")
+            await setting_prefix_suffix(_, query)
+            
+        elif data == "clear_suffix":
+            await update_user_settings(user_id, {"suffix": ""})
+            await query.answer("✅ Suffix cleared!")
+            await setting_prefix_suffix(_, query)
+            
+        # ================= HEADER/FOOTER =================
+        elif data == "set_header_format":
+            await query.message.delete()
+            response = await ask_user(
+                query.message.chat.id,
                 "📄 **Set Caption Header**\n\n"
                 "Please send me the header text for captions:\n\n"
                 "**Example:**\n"
                 "• Header: `🎵 Music Bot`\n"
                 "• Result: Header appears at top of caption\n\n"
-                "Click ❌ Cancel to go back.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("❌ Cancel", callback_data="setting_header_footer")]
-                ])
+                "**Note:** Use \\n for new lines."
             )
             
-        elif data == "setting_footer":
-            USER_STATES[user_id] = {"action": "set_footer"}
-            await query.message.edit(
+            if response:
+                header = response.text.strip()
+                await update_user_settings(user_id, {"caption_header": header})
+                await app.send_message(query.message.chat.id, f"✅ Caption header set to:\n`{header}`")
+                
+        elif data == "set_footer_format":
+            await query.message.delete()
+            response = await ask_user(
+                query.message.chat.id,
                 "📑 **Set Caption Footer**\n\n"
                 "Please send me the footer text for captions:\n\n"
                 "**Example:**\n"
                 "• Footer: `Converted by @AudioBot`\n"
                 "• Result: Footer appears at bottom of caption\n\n"
-                "Click ❌ Cancel to go back.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("❌ Cancel", callback_data="setting_header_footer")]
-                ])
+                "**Note:** Use \\n for new lines."
             )
+            
+            if response:
+                footer = response.text.strip()
+                await update_user_settings(user_id, {"caption_footer": footer})
+                await app.send_message(query.message.chat.id, f"✅ Caption footer set to:\n`{footer}`")
+                
+        elif data == "clear_header":
+            await update_user_settings(user_id, {"caption_header": ""})
+            await query.answer("✅ Header cleared!")
+            await setting_header_footer(_, query)
+            
+        elif data == "clear_footer":
+            await update_user_settings(user_id, {"caption_footer": ""})
+            await query.answer("✅ Footer cleared!")
+            await setting_header_footer(_, query)
             
         elif data == "confirm_reset":
             # Reset to default settings
@@ -1365,7 +1449,7 @@ async def settings_callback_handler(_, query: CallbackQuery):
                 "caption_footer": ""
             }
             await update_user_settings(user_id, default_settings)
-            await query.answer("All settings have been reset to default!")
+            await query.answer("✅ All settings have been reset to default!")
             await settings_command(_, query.message)
             
     except Exception as e:
@@ -1386,57 +1470,140 @@ async def admin_callback_handler(_, query: CallbackQuery):
     
     try:
         if data == "admin_ban":
-            USER_STATES[user_id] = {"action": "ban_user"}
-            await query.message.edit(
+            await query.message.delete()
+            response = await ask_user(
+                query.message.chat.id,
                 "🚫 **Ban User**\n\n"
                 "Please enter the user ID to ban:\n\n"
                 "**Format:** Just send the user ID as a number.\n"
                 "**Example:** `123456789`\n\n"
-                "Click ❌ Cancel to go back.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("❌ Cancel", callback_data="admin_back")]
-                ])
+                "⚠️ **Warning:** This will prevent the user from using the bot."
             )
             
+            if response:
+                try:
+                    target_id = int(response.text.strip())
+                    await ban_user(target_id, user_id)
+                    await app.send_message(query.message.chat.id, f"✅ User `{target_id}` has been banned.")
+                    
+                    # Log to channel
+                    log_channel = await get_log_channel()
+                    if log_channel:
+                        await app.send_message(
+                            log_channel,
+                            f"🚫 **User Banned**\n\n"
+                            f"👤 User ID: `{target_id}`\n"
+                            f"👮 Banned by: {query.from_user.mention}\n"
+                            f"🕐 Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                        )
+                    
+                except ValueError:
+                    await app.send_message(query.message.chat.id, "❌ Invalid user ID! Please send a numeric ID.")
+                    
         elif data == "admin_unban":
-            USER_STATES[user_id] = {"action": "unban_user"}
-            await query.message.edit(
+            await query.message.delete()
+            response = await ask_user(
+                query.message.chat.id,
                 "✅ **Unban User**\n\n"
                 "Please enter the user ID to unban:\n\n"
                 "**Format:** Just send the user ID as a number.\n"
                 "**Example:** `123456789`\n\n"
-                "Click ❌ Cancel to go back.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("❌ Cancel", callback_data="admin_back")]
-                ])
+                "ℹ️ This will restore the user's access to the bot."
             )
             
+            if response:
+                try:
+                    target_id = int(response.text.strip())
+                    await unban_user(target_id)
+                    await app.send_message(query.message.chat.id, f"✅ User `{target_id}` has been unbanned.")
+                    
+                    # Log to channel
+                    log_channel = await get_log_channel()
+                    if log_channel:
+                        await app.send_message(
+                            log_channel,
+                            f"✅ **User Unbanned**\n\n"
+                            f"👤 User ID: `{target_id}`\n"
+                            f"👮 Action by: {query.from_user.mention}\n"
+                            f"🕐 Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                        )
+                    
+                except ValueError:
+                    await app.send_message(query.message.chat.id, "❌ Invalid user ID! Please send a numeric ID.")
+                    
         elif data == "admin_add_premium":
-            USER_STATES[user_id] = {"action": "add_premium"}
-            await query.message.edit(
+            await query.message.delete()
+            response = await ask_user(
+                query.message.chat.id,
                 "👑 **Add Premium User**\n\n"
                 "Please enter the user ID to add to premium:\n\n"
                 "**Format:** Just send the user ID as a number.\n"
                 "**Example:** `123456789`\n\n"
-                "Click ❌ Cancel to go back.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("❌ Cancel", callback_data="admin_back")]
-                ])
+                "ℹ️ This will grant the user premium access to all features."
             )
             
+            if response:
+                try:
+                    target_id = int(response.text.strip())
+                    await add_premium(target_id, user_id)
+                    await app.send_message(query.message.chat.id, f"✅ User `{target_id}` added to premium users.")
+                    
+                    # Notify user if possible
+                    try:
+                        await app.send_message(
+                            target_id,
+                            "🎉 **You've been granted Premium Access!**\n\n"
+                            "You now have access to all premium features.\n"
+                            "Thank you for using our bot!"
+                        )
+                    except:
+                        pass
+                    
+                    # Log to channel
+                    log_channel = await get_log_channel()
+                    if log_channel:
+                        await app.send_message(
+                            log_channel,
+                            f"👑 **Premium User Added**\n\n"
+                            f"👤 User ID: `{target_id}`\n"
+                            f"👮 Added by: {query.from_user.mention}\n"
+                            f"🕐 Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                        )
+                    
+                except ValueError:
+                    await app.send_message(query.message.chat.id, "❌ Invalid user ID! Please send a numeric ID.")
+                    
         elif data == "admin_remove_premium":
-            USER_STATES[user_id] = {"action": "remove_premium"}
-            await query.message.edit(
+            await query.message.delete()
+            response = await ask_user(
+                query.message.chat.id,
                 "👤 **Remove Premium User**\n\n"
                 "Please enter the user ID to remove from premium:\n\n"
                 "**Format:** Just send the user ID as a number.\n"
                 "**Example:** `123456789`\n\n"
-                "Click ❌ Cancel to go back.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("❌ Cancel", callback_data="admin_back")]
-                ])
+                "⚠️ **Note:** This will revoke the user's premium access."
             )
             
+            if response:
+                try:
+                    target_id = int(response.text.strip())
+                    await remove_premium(target_id)
+                    await app.send_message(query.message.chat.id, f"✅ User `{target_id}` removed from premium users.")
+                    
+                    # Log to channel
+                    log_channel = await get_log_channel()
+                    if log_channel:
+                        await app.send_message(
+                            log_channel,
+                            f"👤 **Premium User Removed**\n\n"
+                            f"👤 User ID: `{target_id}`\n"
+                            f"👮 Removed by: {query.from_user.mention}\n"
+                            f"🕐 Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                        )
+                    
+                except ValueError:
+                    await app.send_message(query.message.chat.id, "❌ Invalid user ID! Please send a numeric ID.")
+                    
         elif data == "admin_view_premium":
             premium_users = await get_premium_users()
             
@@ -1491,11 +1658,13 @@ async def admin_callback_handler(_, query: CallbackQuery):
             
             keyboard = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("➕ Add Channel", callback_data="add_log_channel"),
-                    InlineKeyboardButton("👁 View Channel", callback_data="view_log_channel"),
-                    InlineKeyboardButton("🗑 Remove Channel", callback_data="remove_log_channel")
+                    InlineKeyboardButton("➕ Add Channel", callback_data="add_log_channel_admin"),
+                    InlineKeyboardButton("👁 View Channel", callback_data="view_log_channel_admin")
                 ],
-                [InlineKeyboardButton("🔙 Back", callback_data="admin_back")]
+                [
+                    InlineKeyboardButton("🗑 Remove Channel", callback_data="remove_log_channel_admin"),
+                    InlineKeyboardButton("🔙 Back", callback_data="admin_back")
+                ]
             ])
             
             await query.message.edit(text, reply_markup=keyboard)
@@ -1593,30 +1762,47 @@ async def admin_callback_handler(_, query: CallbackQuery):
             # Restart the bot
             os.execv(sys.executable, [sys.executable] + sys.argv)
             
-        elif data == "add_log_channel":
-            USER_STATES[user_id] = {"action": "set_log_channel"}
-            await query.message.edit(
+        elif data == "add_log_channel_admin":
+            await query.message.delete()
+            response = await ask_user(
+                query.message.chat.id,
                 "📢 **Set Log Channel**\n\n"
                 "Please enter the channel ID to set as log channel:\n\n"
                 "**Format:** Just send the channel ID as a number.\n"
                 "**Note:** Must start with -100 for supergroups\n"
                 "**Example:** `-1001234567890`\n\n"
-                "Click ❌ Cancel to go back.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("❌ Cancel", callback_data="admin_log_channel")]
-                ])
+                "ℹ️ The bot must be an admin in this channel."
             )
             
-        elif data == "view_log_channel":
+            if response:
+                try:
+                    channel_id = int(response.text.strip())
+                    await set_log_channel(channel_id)
+                    await app.send_message(query.message.chat.id, f"✅ Log channel set to:\n`{channel_id}`")
+                    
+                    # Test message to log channel
+                    try:
+                        await app.send_message(
+                            channel_id,
+                            "📢 **Log Channel Set Successfully!**\n\n"
+                            "This channel will now receive bot logs and notifications."
+                        )
+                    except Exception as e:
+                        await app.send_message(query.message.chat.id, f"⚠️ Could not send test message: {e}")
+                    
+                except ValueError:
+                    await app.send_message(query.message.chat.id, "❌ Invalid channel ID! Please send a numeric ID.")
+                    
+        elif data == "view_log_channel_admin":
             log_channel = await get_log_channel()
             if log_channel:
                 await query.answer(f"Log Channel: {log_channel}", show_alert=True)
             else:
                 await query.answer("No log channel set!", show_alert=True)
                 
-        elif data == "remove_log_channel":
+        elif data == "remove_log_channel_admin":
             await admin_col.delete_one({"key": "log_channel"})
-            await query.answer("Log channel removed!")
+            await query.answer("✅ Log channel removed!")
             await admin_log_channel(_, query)
             
         elif data.startswith("toggle_free_mode_"):
@@ -1632,237 +1818,6 @@ async def admin_callback_handler(_, query: CallbackQuery):
     except Exception as e:
         logger.error(f"Admin callback error: {e}")
         await query.answer("❌ An error occurred", show_alert=True)
-
-# ================= MESSAGE HANDLER FOR STATES =================
-@app.on_message(
-    filters.private
-    & filters.text
-    & ~filters.command(["start", "stats", "admin", "settings", "queue", "cancel", "help"])
-)
-async def state_message_handler(_, m: Message):
-    """Handle messages for conversation states"""
-    user_id = m.from_user.id
-    
-    if user_id not in USER_STATES:
-        return
-    
-    state = USER_STATES[user_id]
-    action = state.get("action")
-    
-    try:
-        if action == "set_thumb":
-            thumb_url = m.text.strip()
-            
-            # Basic URL validation
-            if not (thumb_url.startswith("http://") or thumb_url.startswith("https://")):
-                await m.reply("❌ Invalid URL! Please send a valid HTTP/HTTPS URL.")
-                return
-            
-            await update_user_settings(user_id, {"thumb_url": thumb_url})
-            await m.reply(f"✅ Thumbnail URL set to:\n`{thumb_url}`")
-            del USER_STATES[user_id]
-            
-        elif action == "set_rename":
-            rename_format = m.text.strip()
-            await update_user_settings(user_id, {"rename_format": rename_format})
-            await m.reply(f"✅ Rename format set to:\n`{rename_format}`")
-            del USER_STATES[user_id]
-            
-        elif action == "set_remove_text":
-            remove_text = m.text.strip()
-            await update_user_settings(user_id, {"remove_text": remove_text})
-            await m.reply(f"✅ Text to remove set to:\n`{remove_text}`")
-            del USER_STATES[user_id]
-            
-        elif action == "set_replace_text":
-            text = m.text.strip()
-            if "," not in text:
-                await m.reply("❌ Invalid format! Please use: `old_text, new_text`")
-                return
-            
-            replace_text, replace_with = [t.strip() for t in text.split(",", 1)]
-            await update_user_settings(user_id, {
-                "replace_text": replace_text,
-                "replace_with": replace_with
-            })
-            await m.reply(f"✅ Replacement set:\n`{replace_text}` → `{replace_with}`")
-            del USER_STATES[user_id]
-            
-        elif action == "set_prefix":
-            prefix = m.text.strip()
-            await update_user_settings(user_id, {"prefix": prefix})
-            await m.reply(f"✅ Prefix set to:\n`{prefix}`")
-            del USER_STATES[user_id]
-            
-        elif action == "set_suffix":
-            suffix = m.text.strip()
-            await update_user_settings(user_id, {"suffix": suffix})
-            await m.reply(f"✅ Suffix set to:\n`{suffix}`")
-            del USER_STATES[user_id]
-            
-        elif action == "set_header":
-            header = m.text.strip()
-            await update_user_settings(user_id, {"caption_header": header})
-            await m.reply(f"✅ Caption header set to:\n`{header}`")
-            del USER_STATES[user_id]
-            
-        elif action == "set_footer":
-            footer = m.text.strip()
-            await update_user_settings(user_id, {"caption_footer": footer})
-            await m.reply(f"✅ Caption footer set to:\n`{footer}`")
-            del USER_STATES[user_id]
-            
-        # Admin actions
-        elif action == "ban_user":
-            if not await is_admin(user_id):
-                del USER_STATES[user_id]
-                return
-            
-            try:
-                target_id = int(m.text.strip())
-                await ban_user(target_id, user_id)
-                await m.reply(f"✅ User `{target_id}` has been banned.")
-                
-                # Log to channel
-                log_channel = await get_log_channel()
-                if log_channel:
-                    await app.send_message(
-                        log_channel,
-                        f"🚫 **User Banned**\n\n"
-                        f"👤 User ID: `{target_id}`\n"
-                        f"👮 Banned by: {m.from_user.mention}\n"
-                        f"🕐 Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-                    )
-                
-            except ValueError:
-                await m.reply("❌ Invalid user ID! Please send a numeric ID.")
-                return
-            finally:
-                del USER_STATES[user_id]
-                
-        elif action == "unban_user":
-            if not await is_admin(user_id):
-                del USER_STATES[user_id]
-                return
-            
-            try:
-                target_id = int(m.text.strip())
-                await unban_user(target_id)
-                await m.reply(f"✅ User `{target_id}` has been unbanned.")
-                
-                # Log to channel
-                log_channel = await get_log_channel()
-                if log_channel:
-                    await app.send_message(
-                        log_channel,
-                        f"✅ **User Unbanned**\n\n"
-                        f"👤 User ID: `{target_id}`\n"
-                        f"👮 Action by: {m.from_user.mention}\n"
-                        f"🕐 Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-                    )
-                
-            except ValueError:
-                await m.reply("❌ Invalid user ID! Please send a numeric ID.")
-                return
-            finally:
-                del USER_STATES[user_id]
-                
-        elif action == "add_premium":
-            if not await is_admin(user_id):
-                del USER_STATES[user_id]
-                return
-            
-            try:
-                target_id = int(m.text.strip())
-                await add_premium(target_id, user_id)
-                await m.reply(f"✅ User `{target_id}` added to premium users.")
-                
-                # Notify user if possible
-                try:
-                    await app.send_message(
-                        target_id,
-                        "🎉 **You've been granted Premium Access!**\n\n"
-                        "You now have access to all premium features.\n"
-                        "Thank you for using our bot!"
-                    )
-                except:
-                    pass
-                
-                # Log to channel
-                log_channel = await get_log_channel()
-                if log_channel:
-                    await app.send_message(
-                        log_channel,
-                        f"👑 **Premium User Added**\n\n"
-                        f"👤 User ID: `{target_id}`\n"
-                        f"👮 Added by: {m.from_user.mention}\n"
-                        f"🕐 Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-                    )
-                
-            except ValueError:
-                await m.reply("❌ Invalid user ID! Please send a numeric ID.")
-                return
-            finally:
-                del USER_STATES[user_id]
-                
-        elif action == "remove_premium":
-            if not await is_admin(user_id):
-                del USER_STATES[user_id]
-                return
-            
-            try:
-                target_id = int(m.text.strip())
-                await remove_premium(target_id)
-                await m.reply(f"✅ User `{target_id}` removed from premium users.")
-                
-                # Log to channel
-                log_channel = await get_log_channel()
-                if log_channel:
-                    await app.send_message(
-                        log_channel,
-                        f"👤 **Premium User Removed**\n\n"
-                        f"👤 User ID: `{target_id}`\n"
-                        f"👮 Removed by: {m.from_user.mention}\n"
-                        f"🕐 Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-                    )
-                
-            except ValueError:
-                await m.reply("❌ Invalid user ID! Please send a numeric ID.")
-                return
-            finally:
-                del USER_STATES[user_id]
-                
-        elif action == "set_log_channel":
-            if not await is_admin(user_id):
-                del USER_STATES[user_id]
-                return
-            
-            try:
-                channel_id = int(m.text.strip())
-                await set_log_channel(channel_id)
-                await m.reply(f"✅ Log channel set to:\n`{channel_id}`")
-                
-                # Test message to log channel
-                try:
-                    await app.send_message(
-                        channel_id,
-                        "📢 **Log Channel Set Successfully!**\n\n"
-                        "This channel will now receive bot logs and notifications."
-                    )
-                except Exception as e:
-                    await m.reply(f"⚠️ Could not send test message: {e}")
-                
-            except ValueError:
-                await m.reply("❌ Invalid channel ID! Please send a numeric ID.")
-                return
-            finally:
-                del USER_STATES[user_id]
-                
-    except Exception as e:
-        logger.error(f"State handler error: {e}")
-        await m.reply("❌ An error occurred while processing your request.")
-        if user_id in USER_STATES:
-            del USER_STATES[user_id]
 
 # ================= EXISTING COMMANDS =================
 @app.on_message(filters.command("start"))
