@@ -1634,7 +1634,11 @@ async def admin_callback_handler(_, query: CallbackQuery):
         await query.answer("❌ An error occurred", show_alert=True)
 
 # ================= MESSAGE HANDLER FOR STATES =================
-@app.on_message(filters.private & ~filters.command())
+@app.on_message(
+    filters.private
+    & filters.text
+    & ~filters.command(["start", "stats", "admin", "settings", "queue", "cancel", "help"])
+)
 async def state_message_handler(_, m: Message):
     """Handle messages for conversation states"""
     user_id = m.from_user.id
