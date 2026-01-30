@@ -16,7 +16,7 @@ from pyrogram.raw import functions, types
 # ================= CONFIGURATION =================
 API_ID = int(os.getenv("API_ID", "27169529"))  # Your API ID
 API_HASH = os.getenv("API_HASH", "5d67602a4e0bbfabe669c0febeaf63b6")  # Your API Hash
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8539561305:AAGF1JDWkXt3mlSqnD7UnKNoZp7q3HtOhl0")  # Your bot token
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8539561305:AAEetA27OpZ-v6c8u4PIi_x1V4meAvFKOK8")  # Your bot token
 OWNER_ID = int(os.getenv("OWNER_ID", "6441347235"))  # Your user ID
 
 # ================= LOGGING =================
@@ -33,7 +33,6 @@ logger = logging.getLogger("OldUsersBot")
 # ================= GLOBAL VARIABLES =================
 BOT_START_TIME = time.time()
 users_fetch_tasks: Dict[int, Dict] = {}
-USER_STATES: Dict[int, Dict] = {}
 
 # ================= CREATE BOT =================
 app = Client(
@@ -83,6 +82,25 @@ def save_users_to_file(user_ids: Set[int], filename: str = "broadcast.txt") -> s
 def format_number(num: int) -> str:
     """Format number with commas"""
     return f"{num:,}"
+
+def validate_bot_token(token: str) -> bool:
+    """Validate bot token format"""
+    if not token or ":" not in token:
+        return False
+    
+    parts = token.split(":")
+    if len(parts) != 2:
+        return False
+    
+    # Check if first part is numeric (bot ID)
+    if not parts[0].isdigit():
+        return False
+    
+    # Check if second part looks like a valid hash
+    if len(parts[1]) < 30:
+        return False
+    
+    return True
 
 # ================= USER DATA FETCHING =================
 async def fetch_old_users_pts(bot_token: str, max_attempts: int = 50000) -> Dict[str, Any]:
@@ -301,32 +319,6 @@ async def fetch_old_users_combined(bot_token: str) -> Dict[str, Any]:
         "methods": " + ".join(methods_used) if methods_used else "None"
     }
 
-# ================= ASK FUNCTION =================
-async def ask_user(chat_id: int, question: str, timeout: int = 60) -> str:
-    """Ask user a question and wait for response"""
-    try:
-        # Send the question
-        msg = await app.send_message(chat_id, question)
-        
-        # Wait for response
-        start_time = time.time()
-        while time.time() - start_time < timeout:
-            # Check USER_STATES for response
-            if chat_id in USER_STATES and "response" in USER_STATES[chat_id]:
-                response = USER_STATES[chat_id]["response"]
-                del USER_STATES[chat_id]  # Clean up
-                return response
-            
-            await asyncio.sleep(0.5)
-        
-        # Timeout
-        await msg.edit("⏰ Request timed out. Please try again.")
-        return ""
-        
-    except Exception as e:
-        logger.error(f"Error in ask_user: {e}")
-        return ""
-
 # ================= COMMAND HANDLERS =================
 @app.on_message(filters.command("start"))
 async def start_command(_, message: Message):
@@ -436,14 +428,11 @@ async def cancel_command(_, message: Message):
     if user_id in users_fetch_tasks:
         users_fetch_tasks[user_id]["cancelled"] = True
         await message.reply("🛑 **Operation cancelled!**\n\nYour fetch task has been stopped.")
-    elif user_id in USER_STATES:
-        del USER_STATES[user_id]
-        await message.reply("🛑 **Operation cancelled!**\n\nInput request has been cancelled.")
     else:
         await message.reply("ℹ️ **No active operation to cancel.**")
 
 @app.on_message(filters.command("old_users"))
-async def old_users_command(_, message: Message):
+async def old_users_command(client: Client, message: Message):
     """Handle /old_users command"""
     user_id = message.from_user.id
     
@@ -452,59 +441,52 @@ async def old_users_command(_, message: Message):
         await message.reply("⏳ **Already processing!**\n\nPlease wait for current operation to complete.")
         return
     
-    # Ask for bot token
-    question_text = (
-        "🔑 **Enter Bot Token**\n\n"
-        "Please send me the bot token you want to fetch users from:\n\n"
-        "**Format:** `1234567890:ABCDEFGHIJKLMNOPQRSTUVWXYZ`\n\n"
-        "⚠️ **Important:**\n"
-        "• Only use YOUR OWN bot tokens\n"
-        "• This may take several minutes\n"
-        "• Do NOT share others' bot tokens\n\n"
-        "Type `/cancel` to cancel this request."
-    )
-    
-    # Store state for asking
-    USER_STATES[user_id] = {"action": "awaiting_token"}
-    
-    # Send question and wait for response
     try:
-        msg = await message.reply(question_text)
+        # Ask user for bot token using app.ask()
+        ask_msg = await client.ask(
+            chat_id=message.chat.id,
+            text=(
+                "🔑 **Enter Bot Token**\n\n"
+                "Please send me the bot token you want to fetch users from:\n\n"
+                "**Format:** `1234567890:ABCDEFGHIJKLMNOPQRSTUVWXYZ`\n\n"
+                "⚠️ **Important:**\n"
+                "• Only use YOUR OWN bot tokens\n"
+                "• This may take several minutes\n"
+                "• Do NOT share others' bot tokens\n\n"
+                "Type `/cancel` to cancel this request."
+            ),
+            filters=filters.text & filters.private,
+            timeout=120,
+            reply_to_message_id=message.id
+        )
         
-        # Wait for response
-        start_time = time.time()
-        timeout = 120  # 2 minutes timeout
+        bot_token = ask_msg.text.strip()
         
-        while time.time() - start_time < timeout:
-            if user_id in USER_STATES and "response" in USER_STATES[user_id]:
-                bot_token = USER_STATES[user_id]["response"].strip()
-                del USER_STATES[user_id]  # Clean up
-                
-                # Validate token format
-                if not (":" in bot_token and len(bot_token) > 30):
-                    await msg.edit("❌ **Invalid bot token format!**\n\nPlease provide a valid bot token in the format: `1234567890:ABC...`")
-                    return
-                
-                # Start the fetch process
-                await msg.edit("✅ **Token received!**\n\n🔄 Starting user fetch process...")
-                asyncio.create_task(fetch_and_send_users(user_id, message.chat.id, bot_token, msg.id))
-                return
-            
-            await asyncio.sleep(0.5)
+        # Validate token format
+        if not validate_bot_token(bot_token):
+            await message.reply("❌ **Invalid bot token format!**\n\nPlease provide a valid bot token in the format: `1234567890:ABC...`\n\nUse `/old_users` to try again.")
+            return
         
-        # Timeout
-        await msg.edit("⏰ **Request timed out!**\n\nPlease try again with `/old_users`")
-        if user_id in USER_STATES:
-            del USER_STATES[user_id]
-            
+        # Acknowledge receipt
+        status_msg = await message.reply(
+            "✅ **Token received!**\n\n"
+            "🔄 Starting user fetch process...\n"
+            "⏳ This may take several minutes.\n\n"
+            "📊 **Status:** Initializing..."
+        )
+        
+        # Start the fetch process
+        asyncio.create_task(fetch_and_send_users(client, user_id, message.chat.id, bot_token, status_msg.id))
+        
+    except asyncio.TimeoutError:
+        await message.reply("⏰ **Request timed out!**\n\nYou took too long to reply. Please try again with `/old_users`")
     except Exception as e:
         logger.error(f"Error in old_users_command: {e}")
-        if user_id in USER_STATES:
-            del USER_STATES[user_id]
+        logger.error(traceback.format_exc())
         await message.reply("❌ **Error occurred!**\n\nPlease try again.")
 
 # ================= MAIN FETCH FUNCTION =================
-async def fetch_and_send_users(user_id: int, chat_id: int, bot_token: str, status_msg_id: int):
+async def fetch_and_send_users(client: Client, user_id: int, chat_id: int, bot_token: str, status_msg_id: int):
     """Main function to fetch users and send results"""
     start_time = time.time()
     
@@ -518,14 +500,7 @@ async def fetch_and_send_users(user_id: int, chat_id: int, bot_token: str, statu
     
     try:
         # Update status
-        status_msg = await app.get_messages(chat_id, status_msg_id)
-        await status_msg.edit(
-            "🔍 **Fetching Users**\n\n"
-            "🔄 **Status:** Starting PTS method...\n"
-            "👥 **Users Found:** 0\n"
-            "⏱ **Elapsed:** 0s\n\n"
-            "⏳ This may take several minutes..."
-        )
+        status_msg = await client.get_messages(chat_id, status_msg_id)
         
         # Method 1: Try PTS method first
         await status_msg.edit(
@@ -579,99 +554,81 @@ async def fetch_and_send_users(user_id: int, chat_id: int, bot_token: str, statu
                 
                 # Save to file
                 filename = f"broadcast_{int(time.time())}.txt"
-                file_info = save_users_to_file(combined_users, filename)
+                save_users_to_file(combined_users, filename)
                 
-                if file_info:
-                    # Send file with caption
-                    caption = (
-                        f"📁 **User Data File**\n\n"
-                        f"👥 **Total Users:** {format_number(total_count)}\n"
-                        f"⏱ **Fetch Time:** {elapsed_total}\n"
-                        f"📊 **Methods Used:** PTS + Channels\n"
-                        f"📅 **Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-                        f"📝 **Format:** One user ID per line\n"
-                        f"💾 **File:** {filename}"
-                    )
-                    
-                    await app.send_document(
-                        chat_id=chat_id,
-                        document=filename,
-                        caption=caption,
-                        reply_to_message_id=status_msg_id
-                    )
-                    
-                    # Clean up file
-                    try:
-                        os.remove(filename)
-                    except:
-                        pass
-                    
-                    # Final status
-                    await status_msg.edit(
-                        f"🎉 **Complete!**\n\n"
-                        f"✅ **Successfully fetched users!**\n"
-                        f"👥 **Total Users:** {format_number(total_count)}\n"
-                        f"⏱ **Total Time:** {elapsed_total}\n"
-                        f"📁 **File Sent:** {filename}\n\n"
-                        f"📊 **Breakdown:**\n"
-                        f"• PTS method: {format_number(result['count'])} users\n"
-                        f"• Channels method: {format_number(result2['count'])} users\n"
-                        f"• Unique total: {format_number(total_count)} users\n\n"
-                        f"✅ **Done!**"
-                    )
-                    
-                else:
-                    await status_msg.edit(
-                        f"❌ **File Save Failed**\n\n"
-                        f"✅ Users fetched: {format_number(total_count)}\n"
-                        f"⏱ Time: {elapsed_total}\n"
-                        f"⚠️ Could not save to file\n\n"
-                        f"Please try again."
-                    )
-            
+                # Send file with caption
+                caption = (
+                    f"📁 **User Data File**\n\n"
+                    f"👥 **Total Users:** {format_number(total_count)}\n"
+                    f"⏱ **Fetch Time:** {elapsed_total}\n"
+                    f"📊 **Methods Used:** PTS + Channels\n"
+                    f"📅 **Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                    f"📝 **Format:** One user ID per line\n"
+                    f"💾 **File:** broadcast.txt"
+                )
+                
+                await client.send_document(
+                    chat_id=chat_id,
+                    document=filename,
+                    caption=caption,
+                    reply_to_message_id=status_msg_id
+                )
+                
+                # Clean up file
+                try:
+                    os.remove(filename)
+                except:
+                    pass
+                
+                # Final status
+                await status_msg.edit(
+                    f"🎉 **Complete!**\n\n"
+                    f"✅ **Successfully fetched users!**\n"
+                    f"👥 **Total Users:** {format_number(total_count)}\n"
+                    f"⏱ **Total Time:** {elapsed_total}\n"
+                    f"📁 **File Sent:** broadcast.txt\n\n"
+                    f"📊 **Breakdown:**\n"
+                    f"• PTS method: {format_number(result['count'])} users\n"
+                    f"• Channels method: {format_number(result2['count'])} users\n"
+                    f"• Unique total: {format_number(total_count)} users\n\n"
+                    f"✅ **Done!**"
+                )
+                
             else:
                 # Only PTS results
                 filename = f"broadcast_{int(time.time())}.txt"
-                file_info = save_users_to_file(set(result["users"]), filename)
+                save_users_to_file(set(result["users"]), filename)
                 
-                if file_info:
-                    caption = (
-                        f"📁 **User Data File**\n\n"
-                        f"👥 **Total Users:** {format_number(result['count'])}\n"
-                        f"⏱ **Fetch Time:** {elapsed}\n"
-                        f"📊 **Method Used:** PTS only\n"
-                        f"📅 **Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-                        f"⚠️ **Note:** Channels method failed\n"
-                        f"💾 **File:** {filename}"
-                    )
-                    
-                    await app.send_document(
-                        chat_id=chat_id,
-                        document=filename,
-                        caption=caption,
-                        reply_to_message_id=status_msg_id
-                    )
-                    
-                    try:
-                        os.remove(filename)
-                    except:
-                        pass
-                    
-                    await status_msg.edit(
-                        f"✅ **Partial Complete**\n\n"
-                        f"👥 **Users Found:** {format_number(result['count'])}\n"
-                        f"⏱ **Time:** {elapsed}\n"
-                        f"📊 **Method:** PTS only\n"
-                        f"⚠️ Channels method failed\n\n"
-                        f"✅ **File sent!**"
-                    )
-                else:
-                    await status_msg.edit(
-                        f"❌ **Failed to save file**\n\n"
-                        f"Found {format_number(result['count'])} users\n"
-                        f"but couldn't save to file.\n\n"
-                        f"Please try again."
-                    )
+                caption = (
+                    f"📁 **User Data File**\n\n"
+                    f"👥 **Total Users:** {format_number(result['count'])}\n"
+                    f"⏱ **Fetch Time:** {elapsed}\n"
+                    f"📊 **Method Used:** PTS only\n"
+                    f"📅 **Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                    f"⚠️ **Note:** Channels method failed\n"
+                    f"💾 **File:** broadcast.txt"
+                )
+                
+                await client.send_document(
+                    chat_id=chat_id,
+                    document=filename,
+                    caption=caption,
+                    reply_to_message_id=status_msg_id
+                )
+                
+                try:
+                    os.remove(filename)
+                except:
+                    pass
+                
+                await status_msg.edit(
+                    f"✅ **Partial Complete**\n\n"
+                    f"👥 **Users Found:** {format_number(result['count'])}\n"
+                    f"⏱ **Time:** {elapsed}\n"
+                    f"📊 **Method:** PTS only\n"
+                    f"⚠️ Channels method failed\n\n"
+                    f"✅ **File sent!**"
+                )
         
         else:
             # PTS failed or no users
@@ -688,21 +645,20 @@ async def fetch_and_send_users(user_id: int, chat_id: int, bot_token: str, statu
     
     except FloodWait as e:
         logger.warning(f"FloodWait in fetch_and_send_users: {e.value} seconds")
-        status_msg = await app.get_messages(chat_id, status_msg_id)
+        status_msg = await client.get_messages(chat_id, status_msg_id)
         await status_msg.edit(
             f"⏳ **Flood Wait**\n\n"
             f"Telegram requires us to wait {e.value} seconds.\n\n"
             f"🔄 Auto-resuming after wait..."
         )
         await asyncio.sleep(e.value)
-        # Could retry here, but for simplicity we'll just report
         
     except Exception as e:
         logger.error(f"Error in fetch_and_send_users: {e}")
         logger.error(traceback.format_exc())
         
         try:
-            status_msg = await app.get_messages(chat_id, status_msg_id)
+            status_msg = await client.get_messages(chat_id, status_msg_id)
             elapsed = format_time_elapsed(start_time)
             await status_msg.edit(
                 f"❌ **Error Occurred**\n\n"
@@ -722,25 +678,6 @@ async def fetch_and_send_users(user_id: int, chat_id: int, bot_token: str, statu
         # Clean up
         if user_id in users_fetch_tasks:
             del users_fetch_tasks[user_id]
-
-# ================= MESSAGE HANDLER FOR RESPONSES =================
-@app.on_message(filters.private & ~filters.command())
-async def handle_user_response(_, message: Message):
-    """Handle user responses for token input"""
-    user_id = message.from_user.id
-    
-    # Check if we're waiting for a response from this user
-    if user_id in USER_STATES and USER_STATES[user_id].get("action") == "awaiting_token":
-        # Store the response
-        USER_STATES[user_id]["response"] = message.text
-        
-        # Acknowledge receipt
-        await message.reply(
-            "✅ **Token received!**\n\n"
-            "🔄 Processing your request...\n"
-            "This may take a few minutes.\n\n"
-            "⏳ Please wait..."
-        )
 
 # ================= ERROR HANDLER =================
 async def error_handler(_, __, ___):
@@ -765,7 +702,6 @@ def notify_owner():
             f"🚀 Ready to fetch users!"
         )
         
-        # Could send to owner here, but we'll just log
         logger.info(f"Bot started at {start_time}")
         
     except Exception as e:
