@@ -16,7 +16,7 @@ from pyrogram.raw import functions, types
 # ================= CONFIGURATION =================
 API_ID = int(os.getenv("API_ID", "27169529"))  # Your API ID
 API_HASH = os.getenv("API_HASH", "5d67602a4e0bbfabe669c0febeaf63b6")  # Your API Hash
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8539561305:AAEetA27OpZ-v6c8u4PIi_x1V4meAvFKOK8")  # Your bot token
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8539561305:AAGF1JDWkXt3mlSqnD7UnKNoZp7q3HtOhl0")  # Your bot token
 OWNER_ID = int(os.getenv("OWNER_ID", "6441347235"))  # Your user ID
 
 # ================= LOGGING =================
