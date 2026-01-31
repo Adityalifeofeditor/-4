@@ -12,6 +12,7 @@ from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import FloodWait, UserNotParticipant, ChannelInvalid
 from pyrogram.raw import functions, types
+import uuid
 
 # ================= CONFIGURATION =================
 API_ID = int(os.getenv("API_ID", "27169529"))  # Your API ID
@@ -206,8 +207,9 @@ async def fetch_old_users_channels(bot_token: str) -> Dict[str, Any]:
     
     temp_bot = None
     try:
+        session_name = f"temp_{uuid.uuid4().hex}"
         temp_bot = Client(
-            "temp_bot_dialog",
+            session_name,
             api_id=API_ID,
             api_hash=API_HASH,
             bot_token=bot_token,
